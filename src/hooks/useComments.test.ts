@@ -154,10 +154,10 @@ describe('useComments', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. Resolved counts with enableResolve
+  // 3. Resolved comments leave the tab count with enableResolve on
   // -----------------------------------------------------------------------
-  describe('resolvedCommentCounts', () => {
-    it('counts resolved comments when enableResolve is true', () => {
+  describe('commentCounts with enableResolve', () => {
+    it('counts only open comments when enableResolve is true', () => {
       const raw = rawWithComments(
         { before: 'A ', marker: makeComment({ id: 'c1', anchor: 'A', status: 'open' }), after: '' },
         {
@@ -181,11 +181,55 @@ describe('useComments', () => {
 
       // 2 open, 1 resolved
       expect(result.current.commentCounts.get('file.md')).toBe(2);
-      expect(result.current.resolvedCommentCounts.get('file.md')).toBe(1);
     });
 
-    it('does not populate resolvedCommentCounts when enableResolve is false', () => {
-      const raw = `Text ${makeComment({ id: 'c1', anchor: 'Text', status: 'resolved' })}`;
+    it('reads 0 for a fully resolved file, the same as a file with no comments', () => {
+      const raw = rawWithComments(
+        {
+          before: 'A ',
+          marker: makeComment({ id: 'c1', anchor: 'A', status: 'resolved' }),
+          after: '',
+        },
+        {
+          before: ' B ',
+          marker: makeComment({ id: 'c2', anchor: 'B', status: 'resolved' }),
+          after: '',
+        },
+      );
+      const params = defaultParams({
+        rawMarkdown: raw,
+        enableResolve: true,
+        tabs: [{ filePath: 'file.md', rawMarkdown: raw }],
+        activeFilePath: 'file.md',
+      });
+      const { result } = renderHook(() => useComments(params));
+
+      expect(result.current.commentCounts.get('file.md')).toBe(0);
+      expect(result.current.commentIdsByFile.get('file.md')).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 3b. Tab badge excludes resolved comments regardless of enableResolve
+  // -----------------------------------------------------------------------
+  describe('commentCounts excludes resolved comments (marker is authoritative)', () => {
+    it('excludes resolved comments from the active-tab badge when enableResolve is false', () => {
+      // Reported bug: a session opened without --enable-resolve showed the
+      // TOTAL comment count even though the document's own markers say some
+      // threads are resolved.
+      const raw = rawWithComments(
+        { before: 'A ', marker: makeComment({ id: 'c1', anchor: 'A', status: 'open' }), after: '' },
+        {
+          before: ' B ',
+          marker: makeComment({ id: 'c2', anchor: 'B', status: 'resolved' }),
+          after: '',
+        },
+        {
+          before: ' C ',
+          marker: makeComment({ id: 'c3', anchor: 'C', status: 'open' }),
+          after: '',
+        },
+      );
       const params = defaultParams({
         rawMarkdown: raw,
         enableResolve: false,
@@ -194,10 +238,157 @@ describe('useComments', () => {
       });
       const { result } = renderHook(() => useComments(params));
 
-      expect(result.current.resolvedCommentCounts.has('file.md')).toBe(false);
-      // All comments counted (resolved ones included)
-      expect(result.current.commentCounts.get('file.md')).toBe(1);
+      // 2 open, 1 resolved — badge must read 2, not 3.
+      expect(result.current.commentCounts.get('file.md')).toBe(2);
     });
+
+    it('excludes resolved comments from an inactive-tab badge when enableResolve is false', () => {
+      const activeRaw = `Active ${makeComment({ id: 'a1', anchor: 'Active', status: 'open' })}`;
+      const otherRaw = rawWithComments(
+        {
+          before: 'X ',
+          marker: makeComment({ id: 'o1', anchor: 'X', status: 'open' }),
+          after: '',
+        },
+        {
+          before: ' Y ',
+          marker: makeComment({ id: 'o2', anchor: 'Y', status: 'resolved' }),
+          after: '',
+        },
+        {
+          before: ' Z ',
+          marker: makeComment({ id: 'o3', anchor: 'Z', status: 'open' }),
+          after: '',
+        },
+      );
+      const params = defaultParams({
+        rawMarkdown: activeRaw,
+        enableResolve: false,
+        tabs: [
+          { filePath: 'active.md', rawMarkdown: activeRaw },
+          { filePath: 'other.md', rawMarkdown: otherRaw },
+        ],
+        activeFilePath: 'active.md',
+      });
+      const { result } = renderHook(() => useComments(params));
+
+      // other.md has 2 open, 1 resolved — badge must read 2, not 3.
+      expect(result.current.commentCounts.get('other.md')).toBe(2);
+    });
+
+    // App's tabCommentCounts adds agentCommentCounts to commentCounts, so a
+    // resolved agent comment left in either map would keep the badge up.
+    const resolvedAgentRaw = rawWithComments(
+      {
+        before: 'A ',
+        marker: makeComment({ id: 'g1', anchor: 'A', status: 'resolved', agentInitiated: true }),
+        after: '',
+      },
+      {
+        before: ' B ',
+        marker: makeComment({ id: 'g2', anchor: 'B', resolved: true, agentInitiated: true }),
+        after: '',
+      },
+    );
+    const tabBadge = (
+      r: { commentCounts: Map<string, number>; agentCommentCounts: Map<string, number> },
+      path: string,
+    ) => (r.commentCounts.get(path) ?? 0) + (r.agentCommentCounts.get(path) ?? 0);
+
+    it('reads 0 for an active tab whose only comments are resolved agent comments', () => {
+      const params = defaultParams({
+        rawMarkdown: resolvedAgentRaw,
+        enableResolve: false,
+        tabs: [{ filePath: 'file.md', rawMarkdown: resolvedAgentRaw }],
+        activeFilePath: 'file.md',
+      });
+      const { result } = renderHook(() => useComments(params));
+
+      expect(tabBadge(result.current, 'file.md')).toBe(0);
+    });
+
+    it('reads 0 for an inactive tab whose only comments are resolved agent comments', () => {
+      const activeRaw = `Active ${makeComment({ id: 'a1', anchor: 'Active', status: 'open' })}`;
+      const params = defaultParams({
+        rawMarkdown: activeRaw,
+        enableResolve: false,
+        tabs: [
+          { filePath: 'active.md', rawMarkdown: activeRaw },
+          { filePath: 'other.md', rawMarkdown: resolvedAgentRaw },
+        ],
+        activeFilePath: 'active.md',
+      });
+      const { result } = renderHook(() => useComments(params));
+
+      expect(tabBadge(result.current, 'other.md')).toBe(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 3c. commentIdsByFile (the Send set) never includes a resolved comment
+  // -----------------------------------------------------------------------
+  describe('commentIdsByFile excludes resolved comments (marker is authoritative)', () => {
+    it.each([true, false])(
+      'excludes a resolved comment id from the active tab when enableResolve is %s',
+      (enableResolve) => {
+        // Reported bug: ReviewBanner derives the Send set from
+        // commentIdsByFile, which was built from the unfiltered comment list
+        // regardless of enableResolve — so a resolved marker was offered (and
+        // sent) even in a session opened WITH --enable-resolve.
+        const raw = rawWithComments(
+          {
+            before: 'A ',
+            marker: makeComment({ id: 'c1', anchor: 'A', status: 'open' }),
+            after: '',
+          },
+          {
+            before: ' B ',
+            marker: makeComment({ id: 'c2', anchor: 'B', status: 'resolved' }),
+            after: '',
+          },
+        );
+        const params = defaultParams({
+          rawMarkdown: raw,
+          enableResolve,
+          tabs: [{ filePath: 'file.md', rawMarkdown: raw }],
+          activeFilePath: 'file.md',
+        });
+        const { result } = renderHook(() => useComments(params));
+
+        expect(result.current.commentIdsByFile.get('file.md')).toEqual(['c1']);
+      },
+    );
+
+    it.each([true, false])(
+      'excludes a resolved comment id from an inactive tab when enableResolve is %s',
+      (enableResolve) => {
+        const activeRaw = `Active ${makeComment({ id: 'a1', anchor: 'Active', status: 'open' })}`;
+        const otherRaw = rawWithComments(
+          {
+            before: 'X ',
+            marker: makeComment({ id: 'o1', anchor: 'X', status: 'open' }),
+            after: '',
+          },
+          {
+            before: ' Y ',
+            marker: makeComment({ id: 'o2', anchor: 'Y', status: 'resolved' }),
+            after: '',
+          },
+        );
+        const params = defaultParams({
+          rawMarkdown: activeRaw,
+          enableResolve,
+          tabs: [
+            { filePath: 'active.md', rawMarkdown: activeRaw },
+            { filePath: 'other.md', rawMarkdown: otherRaw },
+          ],
+          activeFilePath: 'active.md',
+        });
+        const { result } = renderHook(() => useComments(params));
+
+        expect(result.current.commentIdsByFile.get('other.md')).toEqual(['o1']);
+      },
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -224,7 +415,10 @@ describe('useComments', () => {
       expect(result.current.commentCount).toBe(2);
     });
 
-    it('returns total comments when enableResolve is false', () => {
+    it('excludes resolved comments even when enableResolve is false', () => {
+      // The document's markers are authoritative on resolution — commentCount
+      // must not fall back to a raw total just because the session wasn't
+      // opened with --enable-resolve.
       const raw = rawWithComments(
         { before: 'A ', marker: makeComment({ id: 'c1', anchor: 'A', status: 'open' }), after: '' },
         {
@@ -236,7 +430,7 @@ describe('useComments', () => {
       const params = defaultParams({ rawMarkdown: raw, enableResolve: false });
       const { result } = renderHook(() => useComments(params));
 
-      expect(result.current.commentCount).toBe(2);
+      expect(result.current.commentCount).toBe(1);
     });
   });
 
