@@ -124,6 +124,8 @@ const NO_UNPAINTED_ANCHORS: ReadonlySet<string> = new Set<string>();
  * file" on its next edit.
  */
 const BACKFILL_WRITE_DELAY_MS = 2000;
+// Longest the main column stays hidden waiting for its start-up inputs.
+const STARTUP_REVEAL_MS = 1000;
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 const modKey = isMac ? '\u2318' : 'Ctrl';
@@ -325,6 +327,17 @@ export default function App() {
   );
 
   const [explorerDir, setExplorerDir] = useState<string | undefined>(undefined);
+  // Which document opens first, and which folder the explorer starts in, are
+  // decided by start-up sources that answer at different times: ?file or
+  // ?dir, a restored session, the CLI's initial file or folder, and on a
+  // review URL the review's own files. Until they have answered, no document
+  // is active only because none has been chosen yet, and the explorer would
+  // list the server's working directory. The start-up reveal and the
+  // explorer both wait for these.
+  const [initialTargetKnown, setInitialTargetKnown] = useState(false);
+  const [reviewTargetKnown, setReviewTargetKnown] = useState(
+    () => !new URLSearchParams(window.location.search).get('review'),
+  );
   // Bumped on every explicit reveal so the explorer re-browses even when the
   // requested directory equals the last one we asked for (the user may have
   // navigated elsewhere inside the panel since).
@@ -338,7 +351,13 @@ export default function App() {
   const [homeDir, setHomeDir] = useState<string>('');
   const { recentFiles, addRecentFile, clearRecentFiles } = useRecentFiles();
   const { author, setAuthor } = useAuthor();
-  const { settings, updateDocWidth, updateProseSize, updateKeepLineBreaks } = useSettings();
+  const {
+    settings,
+    hydrated: settingsHydrated,
+    updateDocWidth,
+    updateProseSize,
+    updateKeepLineBreaks,
+  } = useSettings();
   const enabledHiddenCommentPrefixes = useMemo(
     () => getEnabledHiddenCommentPrefixes(settings.hiddenComments),
     [settings.hiddenComments],
@@ -968,8 +987,17 @@ export default function App() {
     viewMode === 'rendered',
     DOC_WIDTH_COLS[settings.docWidth],
     railHasContent,
+    // Settings decide the column width (Document width), so a document
+    // shown before they arrive has not reached its width yet.
+    settingsHydrated && !isLoading ? activeFilePath : null,
   );
   const railShown = geometry.railShown;
+  // Off until the loaded document's width has painted, so opening or
+  // switching to a document does not animate the sheet from the placeholder
+  // width, or from the collapsed gutter to one its comments reserve.
+  const pageWidthTransition = geometry.settled
+    ? 'motion-safe:transition-[width] motion-safe:duration-150'
+    : '';
 
   // Whether the rail would draw this comment's thread at all, setting aside
   // whether it happens to be on screen. Anchored density draws only
@@ -1298,6 +1326,7 @@ export default function App() {
     sessions: reviewSessions,
     shownSessions: shownReviewSessions,
     refresh: refreshReviewSessions,
+    fetched: reviewSessionsFetched,
   } = useReviewSession(
     activeFilePath ? [...tabs.map((t) => t.filePath), activeFilePath] : tabs.map((t) => t.filePath),
   );
@@ -2007,6 +2036,8 @@ export default function App() {
         }
       } catch {
         /* ignore */
+      } finally {
+        if (!cancelled) setReviewTargetKnown(true);
       }
     })();
     return () => {
@@ -2030,16 +2061,21 @@ export default function App() {
       // browse siblings, rather than falling back to the server's cwd.
       const parent = getParentDir(urlFile);
       if (parent) setExplorerDir(parent);
+      setInitialTargetKnown(true);
       window.history.replaceState({}, '', window.location.pathname);
       return;
     }
     if (urlDir) {
       setExplorerDir(urlDir);
       setExplorerVisible(true);
+      setInitialTargetKnown(true);
       window.history.replaceState({}, '', window.location.pathname);
       return;
     }
-    if (savedSession && savedSession.openTabs.length > 0) return;
+    if (savedSession && savedSession.openTabs.length > 0) {
+      setInitialTargetKnown(true);
+      return;
+    }
     fetch('/api/config')
       .then((r) => {
         if (!r.ok) throw new Error();
@@ -2059,7 +2095,8 @@ export default function App() {
           setExplorerVisible(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setInitialTargetKnown(true));
   }, [openTab, addRecentFile, setExplorerVisible, savedSession]);
 
   const handleOpenFile = useCallback(
@@ -2897,6 +2934,29 @@ export default function App() {
     return merged;
   }, [commentCounts, agentCommentCounts]);
 
+  // The main column's first layout depends on things that arrive
+  // separately: settings (Document width), the open review sessions (the
+  // banner above the chrome row), which document opens first, and that
+  // document's content (whose comments decide the rail's gutter). Shown
+  // before all of them, it paints at the defaults and then jumps. It stays
+  // hidden until they have arrived, and never hides again: later changes are
+  // the reader's or an agent's, not start-up. STARTUP_REVEAL_MS caps the wait
+  // if a request never answers.
+  const [startupLaidOut, setStartupLaidOut] = useState(false);
+  const startupTargetKnown = initialTargetKnown && reviewTargetKnown;
+  const firstDocumentSettled =
+    startupTargetKnown && (!activeFilePath || !(isLoading && !rawMarkdown));
+  if (!startupLaidOut && settingsHydrated && reviewSessionsFetched && firstDocumentSettled) {
+    setStartupLaidOut(true);
+  }
+  useEffect(() => {
+    if (startupLaidOut) return;
+    const id = setTimeout(() => setStartupLaidOut(true), STARTUP_REVEAL_MS);
+    return () => clearTimeout(id);
+  }, [startupLaidOut]);
+  // The reveal's timeout also caps the explorer's wait for its folder.
+  const explorerDirKnown = startupTargetKnown || startupLaidOut;
+
   return (
     <div className="h-screen flex bg-surface-secondary">
       {/* Full-height left sidebar: expanded panel or slim icon rail. It owns
@@ -2999,24 +3059,33 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {/* Panel content */}
+                {/* Panel content. Hidden with the main column until start-up
+                    has laid out, so the explorer's first listing is not
+                    painted ahead of the page it sits beside. */}
                 {leftPanelView === 'explorer' ? (
-                  <FileExplorer
-                    initialDir={explorerDir}
-                    revealNonce={explorerRevealNonce}
-                    revealPath={explorerRevealPath}
-                    revealConsumedNonce={explorerRevealConsumedRef.current}
-                    onRevealConsumed={handleExplorerRevealConsumed}
-                    activeFilePath={activeFilePath}
-                    homeDir={homeDir}
-                    onOpenFile={handleExplorerOpenFile}
-                    onClose={() => setExplorerVisible(false)}
-                    onContextMenu={handleExplorerContextMenu}
-                    onTrustFolder={handleTrustFolder}
-                    trustPending={trustFolderPending}
-                    grantNonce={grantNonce}
-                    hideHeader
-                  />
+                  <div
+                    className="flex-1 min-h-0 flex flex-col"
+                    style={{ visibility: startupLaidOut ? undefined : 'hidden' }}
+                  >
+                    {explorerDirKnown && (
+                      <FileExplorer
+                        initialDir={explorerDir}
+                        revealNonce={explorerRevealNonce}
+                        revealPath={explorerRevealPath}
+                        revealConsumedNonce={explorerRevealConsumedRef.current}
+                        onRevealConsumed={handleExplorerRevealConsumed}
+                        activeFilePath={activeFilePath}
+                        homeDir={homeDir}
+                        onOpenFile={handleExplorerOpenFile}
+                        onClose={() => setExplorerVisible(false)}
+                        onContextMenu={handleExplorerContextMenu}
+                        onTrustFolder={handleTrustFolder}
+                        trustPending={trustFolderPending}
+                        grantNonce={grantNonce}
+                        hideHeader
+                      />
+                    )}
+                  </div>
                 ) : (
                   <TableOfContents
                     headings={tocHeadings}
@@ -3123,7 +3192,10 @@ export default function App() {
       )}
 
       {/* Main column: chrome row, document, status bar */}
-      <div className="flex-1 min-w-0 flex flex-col">
+      <div
+        className="flex-1 min-w-0 flex flex-col"
+        style={{ visibility: startupLaidOut ? undefined : 'hidden' }}
+      >
         <ReviewBanner
           sessions={shownReviewSessions}
           commentCounts={commentCounts}
@@ -3294,10 +3366,16 @@ export default function App() {
                         <div
                           ref={pageRef}
                           data-doc-page
-                          className="doc-sheet bg-surface mx-auto relative pt-6 pb-[50vh] motion-safe:transition-[width] motion-safe:duration-150"
+                          className={`doc-sheet bg-surface mx-auto relative pt-6 pb-[50vh] ${pageWidthTransition}`}
                           style={{
                             width: geometry.pageWidth,
                             maxWidth: 'calc(100% - 24px)',
+                            // A tab still on its first load has an empty sheet sized
+                            // for a document with no comments; the loaded one may
+                            // reserve the rail's gutter and jump wider and left in
+                            // one frame. Show only the loaded sheet. A reload keeps
+                            // the old content on screen, so it stays visible.
+                            visibility: isLoading && !rawMarkdown ? 'hidden' : undefined,
                             minHeight: railShown
                               ? `max(100%, ${marginLayout.layerHeight + 120}px)`
                               : '100%',
@@ -3306,7 +3384,7 @@ export default function App() {
                           <div
                             ref={proseRef}
                             data-prose-column
-                            className="motion-safe:transition-[width] motion-safe:duration-150"
+                            className={pageWidthTransition}
                             style={{ marginLeft: PAD_L, width: geometry.colWidth }}
                           >
                             {diffEnabled && currentSnapshot != null && diffLines ? (
