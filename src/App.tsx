@@ -80,6 +80,7 @@ import { useAgentBaselines } from './hooks/useAgentBaselines';
 import { shouldAdvanceFrontier, formatReferenceLabel } from './lib/review-frontier';
 import { useComments, type CommentFocusOrigin } from './hooks/useComments';
 import { useHeadingTracking } from './hooks/useHeadingTracking';
+import { useScrollMemory } from './hooks/useScrollMemory';
 import { useContextMenuItems } from './hooks/useContextMenuItems';
 import { getCopySelectionFallbackText } from './lib/copy-selection';
 import { buildNativeCopyFlavors } from './lib/copy-selection-html';
@@ -93,6 +94,7 @@ import { useReviewSession, findActiveSessionForFile } from './hooks/useReviewSes
 import { useOpenAddedReviewFiles } from './hooks/useOpenAddedReviewFiles';
 import { ReviewBanner } from './components/ReviewBanner';
 import { stripReviewParamFromUrl } from './lib/review-url';
+import { loadActiveTab, pickActiveTab, saveActiveTab } from './lib/active-tab';
 import { selectAgentAsks } from './lib/agent-asks';
 import { CommentsRail, RailDensityControl } from './components/CommentsRail';
 import { AppLogo } from './components/AppLogo';
@@ -1605,6 +1607,13 @@ export default function App() {
   const { tocHeadings, activeHeadingId, setActiveHeadingId, spyDisabledRef, scrollSpyRafRef } =
     useHeadingTracking(containerRef, viewerRef, html);
 
+  // Each document keeps its own place in the scroll container, which is shared
+  // between them, as a block in the viewer's container so it comes back to the
+  // same text. `html` is the content key: a tab activated before its body has
+  // rendered has neither the block nor the height to reach.
+  const getViewerBlocks = useCallback(() => viewerRef.current?.getContainer() ?? null, []);
+  useScrollMemory(containerRef, getViewerBlocks, activeFilePath, html);
+
   const handleHeadingNavigate = useCallback(
     (id: string) => {
       cancelAnimationFrame(scrollSpyRafRef.current);
@@ -2010,7 +2019,9 @@ export default function App() {
 
   // Open files referenced by ?review=<sessionId> in URL on first load.
   // The session itself is discovered via useReviewSession's poll; this
-  // effect just makes sure the relevant tabs are open.
+  // effect just makes sure the relevant tabs are open, activating the one the
+  // reader had open before a reload (the first file on a first visit).
+  const reviewTabsOpenedRef = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const reviewId = params.get('review');
@@ -2022,13 +2033,18 @@ export default function App() {
         if (!res.ok) return;
         const session = (await res.json()) as { filePaths: string[] };
         if (cancelled) return;
-        for (let i = 0; i < session.filePaths.length; i++) {
-          if (i === 0) {
-            openTab(session.filePaths[i]);
+        // Same shape as the session restore above: the target opens via
+        // openTab (which activates it) at its own position, and background
+        // opens never steal activation, so both the order and the active tab are kept.
+        const activeTarget = pickActiveTab(session.filePaths, loadActiveTab(reviewId));
+        for (const path of session.filePaths) {
+          if (path === activeTarget) {
+            openTab(path);
           } else {
-            openTabInBackground(session.filePaths[i]);
+            openTabInBackground(path);
           }
         }
+        reviewTabsOpenedRef.current = true;
         const firstFile = session.filePaths[0];
         if (firstFile) {
           const parent = getParentDir(firstFile);
@@ -2044,6 +2060,15 @@ export default function App() {
       cancelled = true;
     };
   }, [openTab, openTabInBackground]);
+
+  // Remember the active document for a reload of this review. Only once the
+  // review's own tabs are open: until then activeFilePath can be a file the
+  // CLI or config opened, which would overwrite the reader's choice.
+  useEffect(() => {
+    if (!activeFilePath || !reviewTabsOpenedRef.current) return;
+    const reviewId = new URLSearchParams(window.location.search).get('review');
+    if (reviewId) saveActiveTab(reviewId, activeFilePath);
+  }, [activeFilePath]);
 
   // Load initial file/dir from URL params, CLI arg, or restored session
   const initialLoadRef = useRef(false);
