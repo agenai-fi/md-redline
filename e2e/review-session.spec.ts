@@ -187,6 +187,46 @@ test.describe('Review session banner', () => {
   });
 });
 
+test.describe('Reloading a review', () => {
+  const SECOND_PATH = resolve(__dirname, 'fixtures/review-session-second.md');
+  const tabFor = (page: import('@playwright/test').Page, path: string) =>
+    page.locator(`[title="${path}"].rounded-t-md`);
+
+  test.beforeEach(async ({ request, baseURL }) => {
+    await abortAllSessions(baseURL!, request);
+    writeFileSync(SECOND_PATH, '# Second Review File\n\nThe second file in the session.\n');
+  });
+
+  test.afterEach(() => {
+    if (existsSync(SECOND_PATH)) unlinkSync(SECOND_PATH);
+  });
+
+  test('returns to the document that was active, not the first one', async ({
+    page,
+    request,
+    baseURL,
+  }) => {
+    const res = await request.post(`${baseURL}/api/review-sessions`, {
+      data: { filePaths: [FIXTURE_PATH, SECOND_PATH], enableResolve: false },
+    });
+    expect(res.status()).toBe(201);
+    const { sessionId } = (await res.json()) as { sessionId: string };
+
+    await page.goto(`/?review=${encodeURIComponent(sessionId)}`);
+    await expect(page.getByRole('heading', { name: 'Review Session Fixture' })).toBeVisible({
+      timeout: 12_000,
+    });
+    await tabFor(page, SECOND_PATH).click();
+    await expect(page.getByRole('heading', { name: 'Second Review File' })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Second Review File' })).toBeVisible({
+      timeout: 12_000,
+    });
+    await expect(page.getByRole('heading', { name: 'Review Session Fixture' })).toHaveCount(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #117: an agent adds a file to a review this tab is showing
 // ---------------------------------------------------------------------------
@@ -232,45 +272,5 @@ test.describe('Adding a file to an open review', () => {
     );
     // In the background: the reader stays on the file they were reading.
     await expect(page.getByRole('heading', { name: 'Review Session Fixture' })).toBeVisible();
-  });
-});
-
-test.describe('Reloading a review', () => {
-  const SECOND_PATH = resolve(__dirname, 'fixtures/review-session-second.md');
-  const tabFor = (page: import('@playwright/test').Page, path: string) =>
-    page.locator(`[title="${path}"].rounded-t-md`);
-
-  test.beforeEach(async ({ request, baseURL }) => {
-    await abortAllSessions(baseURL!, request);
-    writeFileSync(SECOND_PATH, '# Second Review File\n\nThe second file in the session.\n');
-  });
-
-  test.afterEach(() => {
-    if (existsSync(SECOND_PATH)) unlinkSync(SECOND_PATH);
-  });
-
-  test('returns to the document that was active, not the first one', async ({
-    page,
-    request,
-    baseURL,
-  }) => {
-    const res = await request.post(`${baseURL}/api/review-sessions`, {
-      data: { filePaths: [FIXTURE_PATH, SECOND_PATH], enableResolve: false },
-    });
-    expect(res.status()).toBe(201);
-    const { sessionId } = (await res.json()) as { sessionId: string };
-
-    await page.goto(`/?review=${encodeURIComponent(sessionId)}`);
-    await expect(page.getByRole('heading', { name: 'Review Session Fixture' })).toBeVisible({
-      timeout: 12_000,
-    });
-    await tabFor(page, SECOND_PATH).click();
-    await expect(page.getByRole('heading', { name: 'Second Review File' })).toBeVisible();
-
-    await page.reload();
-    await expect(page.getByRole('heading', { name: 'Second Review File' })).toBeVisible({
-      timeout: 12_000,
-    });
-    await expect(page.getByRole('heading', { name: 'Review Session Fixture' })).toHaveCount(0);
   });
 });
