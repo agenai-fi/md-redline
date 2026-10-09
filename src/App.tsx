@@ -824,6 +824,7 @@ export default function App() {
     commentCounts,
     resolvedCommentCounts,
     commentIdsByFile,
+    userRepliedLastIds,
     agentCommentCounts,
     commentCount,
     handleAddComment,
@@ -3123,6 +3124,7 @@ export default function App() {
           onBatchSent={handleBatchSent}
           showToast={showToast}
           commentIdsByFile={commentIdsByFile}
+          userRepliedLastIds={userRepliedLastIds}
           pendingAskCountsBySession={pendingAskCountsBySession}
           onJumpToAsk={handleJumpToAsk}
         />

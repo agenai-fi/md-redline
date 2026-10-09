@@ -26,6 +26,7 @@ import {
   orderCommentsByAnchor,
 } from '../lib/comment-parser';
 import { randomId } from '../lib/random-id';
+import { computeUserRepliedLastIds } from '../lib/answered-comments';
 import { getEffectiveStatus } from '../types';
 import { renderMarkdown } from '../markdown/pipeline';
 import { DEFAULT_HIDDEN_COMMENT_PREFIXES } from '../lib/settings';
@@ -203,6 +204,25 @@ export function useComments(params: UseCommentsParams) {
         agentCommentCounts: agentCounts,
       };
     }, [tabs, activeFilePath, comments, enableResolve]);
+
+  // Sent threads the reviewer replied to after the agent's last reply: pending
+  // again until the agent answers, so a reply alone enables Send.
+  const userRepliedLastIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const tab of tabs) {
+      let tabComments = comments;
+      if (tab.filePath !== activeFilePath) {
+        try {
+          tabComments = parseComments(tab.rawMarkdown).comments;
+        } catch {
+          continue;
+        }
+      }
+      const userTabComments = tabComments.filter((c) => !c.agentInitiated);
+      for (const id of computeUserRepliedLastIds(userTabComments)) ids.add(id);
+    }
+    return ids;
+  }, [tabs, activeFilePath, comments]);
 
   const commentCount = enableResolve
     ? comments.filter((c) => getEffectiveStatus(c) !== 'resolved').length
@@ -431,6 +451,7 @@ export function useComments(params: UseCommentsParams) {
     commentCounts,
     resolvedCommentCounts,
     commentIdsByFile,
+    userRepliedLastIds,
     agentCommentCounts,
     commentCount,
     updateAndSave,

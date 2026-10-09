@@ -17,6 +17,8 @@ interface ReviewBannerProps {
   showToast?: ShowToast;
   /** Comment IDs grouped by file path. */
   commentIdsByFile: Map<string, string[]>;
+  /** Sent comments whose last reply is the reviewer's: pending again until the agent replies. */
+  userRepliedLastIds?: ReadonlySet<string>;
   /** Count of agent questions awaiting a reply, per session id. */
   pendingAskCountsBySession?: Map<string, number>;
   /** Scroll/focus the session's first pending agent question. */
@@ -28,6 +30,8 @@ interface ReviewBannerProps {
 // opens them, and `commentCounts` is keyed by open tab paths. Without this
 // guard, a click during the loading window would generate a "no changes,
 // proceed" prompt using a zero count that is actually "not yet known."
+const NO_IDS: ReadonlySet<string> = new Set();
+
 function sessionIsReady(s: ReviewSession, commentCounts: Map<string, number>): boolean {
   return s.filePaths.every((p) => commentCounts.has(p));
 }
@@ -53,6 +57,7 @@ export function ReviewBanner({
   onBatchSent,
   showToast,
   commentIdsByFile,
+  userRepliedLastIds = NO_IDS,
   pendingAskCountsBySession,
   onJumpToAsk,
 }: ReviewBannerProps) {
@@ -78,7 +83,9 @@ export function ReviewBanner({
   const handleSendBatch = useCallback(
     async (s: ReviewSession) => {
       const sessionIds = s.filePaths.flatMap((p) => commentIdsByFile.get(p) ?? []);
-      const unsentIds = sessionIds.filter((id) => !s.sentCommentIds.includes(id));
+      const unsentIds = sessionIds.filter(
+        (id) => !s.sentCommentIds.includes(id) || userRepliedLastIds.has(id),
+      );
       if (unsentIds.length === 0) return;
       setBusyId(s.id);
       try {
@@ -132,6 +139,7 @@ export function ReviewBanner({
     [
       buildPromptForSession,
       commentIdsByFile,
+      userRepliedLastIds,
       commentCounts,
       onHandoffSuccess,
       onBatchSent,
@@ -144,7 +152,9 @@ export function ReviewBanner({
       setBusyId(s.id);
       try {
         const sessionIds = s.filePaths.flatMap((p) => commentIdsByFile.get(p) ?? []);
-        const unsentIds = sessionIds.filter((id) => !s.sentCommentIds.includes(id));
+        const unsentIds = sessionIds.filter(
+          (id) => !s.sentCommentIds.includes(id) || userRepliedLastIds.has(id),
+        );
         let res: Response;
         try {
           if (unsentIds.length > 0) {
@@ -177,7 +187,14 @@ export function ReviewBanner({
         setBusyId(null);
       }
     },
-    [buildPromptForSession, commentIdsByFile, onHandoffSuccess, onResolved, showToast],
+    [
+      buildPromptForSession,
+      commentIdsByFile,
+      userRepliedLastIds,
+      onHandoffSuccess,
+      onResolved,
+      showToast,
+    ],
   );
 
   const handleDone = useCallback(
@@ -273,7 +290,9 @@ export function ReviewBanner({
 
         const ready = sessionIsReady(s, commentCounts);
         const sessionIds = s.filePaths.flatMap((p) => commentIdsByFile.get(p) ?? []);
-        const unsentIds = sessionIds.filter((id) => !s.sentCommentIds.includes(id));
+        const unsentIds = sessionIds.filter(
+          (id) => !s.sentCommentIds.includes(id) || userRepliedLastIds.has(id),
+        );
         const disabled = busyId === s.id || !ready;
         const userSessionAskCount = pendingAskCountsBySession?.get(s.id) ?? 0;
         return (
