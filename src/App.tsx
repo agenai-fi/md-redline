@@ -802,23 +802,20 @@ export default function App() {
   // not. The scope is exact either way, so what lands on the clipboard is what
   // was highlighted and nothing more.
   //
-  // The painted marks win. `captured` covers a selection that is never painted:
-  // a touch or pen selection stays pending, and the context menu captures its
-  // live range when it opens (#101).
-  const copySelectionAsMarkdown = useCallback((captured?: Range) => {
-    const container = proseRef.current;
-    if (!container) return;
-    const range = rangeFromPaintedSelection(container) ?? captured;
-    if (!range) return;
-    const resolved = resolveSelectionMarkdown(range, container, cleanMarkdownRef.current);
-    if (!resolved) return;
-    void navigator.clipboard.writeText(resolved.markdown).catch(() => {});
-  }, []);
-  const selectionCopyRange = useCallback((): Range | null => {
+  // Read from the painted marks, or, for a touch or pen selection that stays
+  // pending and is never painted, from the browser's own range (#101). Null
+  // when neither is there to read.
+  const selectionAsMarkdown = useCallback((): string | null => {
     const container = proseRef.current;
     if (!container) return null;
-    return rangeFromPaintedSelection(container) ?? rangeFromLiveSelection(container);
+    const range = rangeFromPaintedSelection(container) ?? rangeFromLiveSelection(container);
+    if (!range) return null;
+    return resolveSelectionMarkdown(range, container, cleanMarkdownRef.current)?.markdown ?? null;
   }, []);
+  const copySelectionAsMarkdown = useCallback(() => {
+    const markdown = selectionAsMarkdown();
+    if (markdown) void navigator.clipboard.writeText(markdown).catch(() => {});
+  }, [selectionAsMarkdown]);
   const requestCommentFocus = useCallback(
     (commentId: string, origin: CommentFocusOrigin = 'jump') =>
       setRequestedCommentFocus({ commentId, token: Date.now(), origin }),
@@ -2145,8 +2142,7 @@ export default function App() {
     ensureCommentSurface,
     selectionRef: commentableSelectionRef,
     adoptSelection,
-    selectionCopyRange,
-    copySelectionAsMarkdown,
+    selectionAsMarkdown,
     setAutoExpandForm,
     triggerEdit,
     triggerReply,
@@ -2729,7 +2725,7 @@ export default function App() {
         // sits under the cursor here, so the label has to say what it acts on.
         label: 'Copy selection as markdown',
         section: 'Selection',
-        onExecute: () => copySelectionAsMarkdown(),
+        onExecute: copySelectionAsMarkdown,
       });
     }
     if (commentCount > 0) {

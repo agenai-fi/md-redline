@@ -33,15 +33,10 @@ export interface UseContextMenuItemsParams {
   /** Commit and lock a selection the menu captured when it opened. */
   adoptSelection: (info: SelectionInfo) => void;
   /**
-   * The range a markdown copy of the selection would read: the painted marks,
-   * or the live range of a selection still pending. Null when neither is there.
+   * The selection as the document's markdown, or null when there is nothing
+   * painted and no live range to read it from.
    */
-  selectionCopyRange: () => Range | null;
-  /**
-   * Put the selection on the clipboard as the document's markdown. Reads the
-   * painted marks, falling back to `captured` when nothing is painted.
-   */
-  copySelectionAsMarkdown: (captured?: Range) => void;
+  selectionAsMarkdown: () => string | null;
   setAutoExpandForm: Dispatch<SetStateAction<boolean>>;
   triggerEdit: (id: string) => void;
   triggerReply: (id: string) => void;
@@ -98,8 +93,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
     ensureCommentSurface,
     selectionRef,
     adoptSelection,
-    selectionCopyRange,
-    copySelectionAsMarkdown,
+    selectionAsMarkdown,
     setAutoExpandForm,
     triggerEdit,
     triggerReply,
@@ -225,11 +219,13 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
         if (info.liveText && info.liveText !== sel.text) return false;
         if (info.liveOffset !== undefined && info.liveOffset !== sel.offset) return false;
 
-        // Resolved now rather than on click. A touch or pen selection is never
-        // painted, so its live range is all there is to copy (#101), and the
-        // tap on the item can clear that range before the click lands. With
-        // neither, the item would copy nothing, so it is left out.
-        const copyRange = selectionCopyRange();
+        // Resolved to text now rather than on click. A touch or pen selection
+        // is never painted, so its live range is all there is to read (#101),
+        // and by the click that range may be gone: the tap can move the native
+        // selection, and a repaint while the menu is open (a Mermaid diagram
+        // finishing, a file reload) replaces the nodes it points into. With
+        // nothing to read, the item would copy nothing, so it is left out.
+        const markdown = selectionAsMarkdown();
 
         const items: ContextMenuEntry[] = [
           {
@@ -250,11 +246,13 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
               copySelectionToClipboard(sel);
             },
           },
-          ...(copyRange
+          ...(markdown !== null
             ? [
                 {
                   label: 'Copy as Markdown',
-                  onClick: () => copySelectionAsMarkdown(copyRange),
+                  onClick: () => {
+                    void navigator.clipboard.writeText(markdown).catch(() => {});
+                  },
                 },
               ]
             : []),
@@ -273,8 +271,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
       handleUnresolve,
       handleDelete,
       adoptSelection,
-      selectionCopyRange,
-      copySelectionAsMarkdown,
+      selectionAsMarkdown,
       ensureCommentSurface,
       triggerEdit,
       triggerReply,

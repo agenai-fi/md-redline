@@ -8,7 +8,7 @@ function menu() {
   return { isOpen: false, x: 0, y: 0, open: vi.fn(), close: vi.fn() };
 }
 
-function setup(committed: SelectionInfo, copyRange: Range | null = null) {
+function setup(committed: SelectionInfo, selectionAsMarkdown = vi.fn(() => null as string | null)) {
   const viewerCtxMenu = menu();
   const params = {
     comments: [],
@@ -20,8 +20,7 @@ function setup(committed: SelectionInfo, copyRange: Range | null = null) {
     ensureCommentSurface: vi.fn(),
     selectionRef: { current: committed },
     adoptSelection: vi.fn(),
-    selectionCopyRange: vi.fn(() => copyRange),
-    copySelectionAsMarkdown: vi.fn(),
+    selectionAsMarkdown,
     setAutoExpandForm: vi.fn(),
     triggerEdit: vi.fn(),
     triggerReply: vi.fn(),
@@ -100,16 +99,21 @@ describe('Copy as Markdown in the selection menu (#101)', () => {
     ) as { onClick: () => void } | undefined;
   }
 
-  it('copies the range captured when the menu opened', () => {
-    const range = document.createRange();
-    const { result, params } = setup(committed, range);
+  it('copies the markdown resolved when the menu opened, even once the selection is gone', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const selectionAsMarkdown = vi.fn(() => '- the **list**' as string | null);
+    const { result } = setup(committed, selectionAsMarkdown);
+    const item = copyItem(result);
 
-    copyItem(result)!.onClick();
-    expect(params.copySelectionAsMarkdown).toHaveBeenCalledWith(range);
+    // A repaint or the tap itself has taken the live range by the click.
+    selectionAsMarkdown.mockReturnValue(null);
+    item!.onClick();
+    expect(writeText).toHaveBeenCalledWith('- the **list**');
   });
 
   it('leaves the item out when there is nothing to copy', () => {
-    const { result } = setup(committed, null);
+    const { result } = setup(committed);
     expect(copyItem(result)).toBeUndefined();
   });
 });
