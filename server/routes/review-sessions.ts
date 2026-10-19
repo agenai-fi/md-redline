@@ -163,6 +163,26 @@ function fieldTooLong(field: string, value: string, max: number): string | null 
     : null;
 }
 
+/**
+ * Parse the optional `commentCounts` body field shared by /batch and /finish.
+ * Keys are validated against the session's file paths so an external caller
+ * can't smuggle arbitrary strings into the rebuilt prompt the agent reads;
+ * values must be finite, non-negative numbers.
+ */
+function parseCommentCounts(raw: unknown, filePaths: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  if (raw && typeof raw === 'object') {
+    const allowedPaths = new Set(filePaths);
+    for (const [path, count] of Object.entries(raw as Record<string, unknown>)) {
+      if (!allowedPaths.has(path)) continue;
+      if (typeof count === 'number' && Number.isFinite(count) && count >= 0) {
+        counts.set(path, count);
+      }
+    }
+  }
+  return counts;
+}
+
 export function registerReviewSessionRoutes(
   app: Hono,
   reviewSessions: ReviewSessionStore,
@@ -400,19 +420,11 @@ export function registerReviewSessionRoutes(
     }
     const sessionForCounts = reviewSessions.getSession(id);
     // commentCounts is optional; required only for the queue-rebuild path
-    // to render accurate per-file counts in multi-file mode. Keys are
-    // validated against session.filePaths so an external caller can't
-    // smuggle arbitrary strings into the rebuilt prompt the agent reads.
-    const commentCountsByPath = new Map<string, number>();
-    if (body.commentCounts && typeof body.commentCounts === 'object') {
-      const allowedPaths = new Set(sessionForCounts?.filePaths ?? []);
-      for (const [path, count] of Object.entries(body.commentCounts as Record<string, unknown>)) {
-        if (!allowedPaths.has(path)) continue;
-        if (typeof count === 'number' && Number.isFinite(count) && count >= 0) {
-          commentCountsByPath.set(path, count);
-        }
-      }
-    }
+    // to render accurate per-file counts in multi-file mode.
+    const commentCountsByPath = parseCommentCounts(
+      body.commentCounts,
+      sessionForCounts?.filePaths ?? [],
+    );
     const ok = reviewSessions.sendBatch(id, body.prompt, body.commentIds as string[]);
     if (!ok) {
       // Direct delivery wasn't possible: the agent is busy with the previous
@@ -443,7 +455,7 @@ export function registerReviewSessionRoutes(
 
   app.post('/api/review-sessions/:id/finish', async (c) => {
     const id = c.req.param('id');
-    let body: { prompt?: unknown; commentIds?: unknown } = {};
+    let body: { prompt?: unknown; commentIds?: unknown; commentCounts?: unknown } = {};
     try {
       const raw = await c.req.text();
       if (raw.trim().length > 0) {
@@ -452,7 +464,8 @@ export function registerReviewSessionRoutes(
     } catch {
       return c.json({ error: 'Invalid JSON body' }, 400);
     }
-    if (!reviewSessions.getSession(id)) {
+    const sessionForCounts = reviewSessions.getSession(id);
+    if (!sessionForCounts) {
       return c.json({ error: 'Session not found' }, 404);
     }
     // Finish is the user-origin "I'm finished" signal, so pending asks get
@@ -481,13 +494,25 @@ export function registerReviewSessionRoutes(
     const commentIds = Array.isArray(body.commentIds)
       ? (body.commentIds.filter((id): id is string => typeof id === 'string') as string[])
       : undefined;
-    const ok = reviewSessions.finish(id, prompt, commentIds);
+    // Optional; only used when a queued batch is delivered with the finish
+    // (the prompt is then rebuilt server-side, like /wait does). Read the
+    // files after the awaits above, which mdr_add_files can land during.
+    const commentCountsByPath = parseCommentCounts(
+      body.commentCounts,
+      reviewSessions.getSession(id)?.filePaths ?? sessionForCounts.filePaths,
+    );
+    const queuedCount = reviewSessions.getQueuedBatch(id)?.commentIds.length ?? 0;
+    const ok = reviewSessions.finish(id, prompt, commentIds, commentCountsByPath);
     if (!ok) {
       return c.json({ error: 'Session is not open' }, 409);
     }
-    console.log(
-      `[review-session] finished ${id}${prompt ? ` (${prompt.length} chars)` : ' (no final comments)'}`,
-    );
+    const detail =
+      queuedCount > 0
+        ? ` (with ${queuedCount} queued comment${queuedCount === 1 ? '' : 's'})`
+        : prompt
+          ? ` (${prompt.length} chars)`
+          : ' (no final comments)';
+    console.log(`[review-session] finished ${id}${detail}`);
     return c.json({ ok: true });
   });
 

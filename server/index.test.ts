@@ -2283,6 +2283,59 @@ describe('review sessions API', () => {
     expect((result2.body as { prompt: string }).prompt).toMatch(/`c2`/);
   });
 
+  it('POST .../finish delivers a queued batch to the agent, merging commentCounts from the body', async () => {
+    const create = await requestJson(app, '/api/review-sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filePaths: [docsFile, writtenFile], enableResolve: false }),
+    });
+    expect(create.response.status).toBe(201);
+    const sessionId = (create.body as { sessionId: string }).sessionId;
+
+    // c1 goes straight to a parked poll, which leaves the agent busy.
+    const waitPromise1 = requestJson(app, `/api/review-sessions/${sessionId}/wait`);
+    await requestJson(app, `/api/review-sessions/${sessionId}/batch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'batch1', commentIds: ['c1'] }),
+    });
+    await waitPromise1;
+
+    // c2 is queued behind it.
+    const queued = await requestJson(app, `/api/review-sessions/${sessionId}/batch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'queued batch',
+        commentIds: ['c2'],
+        commentCounts: { [docsFile]: 2, [writtenFile]: 5 },
+      }),
+    });
+    expect(queued.body).toMatchObject({ ok: true, queued: true });
+
+    // Send & finish adds c3. commentCounts is parsed like /batch: a path
+    // outside the session is dropped, and the browser's count per file wins
+    // over the one recorded when c2 was queued.
+    const finish = await requestJson(app, `/api/review-sessions/${sessionId}/finish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'client prompt',
+        commentIds: ['c3'],
+        commentCounts: { [docsFile]: 4, [writtenFile]: 1, '/etc/not-in-session.md': 9 },
+      }),
+    });
+    expect(finish.response.status).toBe(200);
+
+    const result = await requestJson(app, `/api/review-sessions/${sessionId}/wait`);
+    expect(result.body).toMatchObject({ status: 'done' });
+    const prompt = (result.body as { prompt: string }).prompt;
+    expect(prompt).toMatch(/`c2`, `c3`/);
+    expect(prompt).toContain(`${docsFile} (4 comments)`);
+    expect(prompt).toContain(`${writtenFile} (1 comment)`);
+    expect(prompt).not.toContain('not-in-session');
+  });
+
   it('POST .../finish with prompt marks session done', async () => {
     const create = await requestJson(app, '/api/review-sessions', {
       method: 'POST',

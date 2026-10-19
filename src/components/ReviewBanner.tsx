@@ -32,6 +32,21 @@ function sessionIsReady(s: ReviewSession, commentCounts: Map<string, number>): b
   return s.filePaths.every((p) => commentCounts.has(p));
 }
 
+// Per-file comment counts for a session's files, in the shape /batch and
+// /finish accept. The server uses them to rebuild an accurate prompt when a
+// queued batch is delivered (merged with other queued batches, or with the
+// finishing send).
+function commentCountsRecord(
+  s: ReviewSession,
+  commentCounts: Map<string, number>,
+): Record<string, number> {
+  const record: Record<string, number> = {};
+  for (const p of s.filePaths) {
+    record[p] = commentCounts.get(p) ?? 0;
+  }
+  return record;
+}
+
 async function readErrorMessage(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { error?: unknown };
@@ -86,10 +101,7 @@ export function ReviewBanner({
         // Pass per-file commentCounts so the server can rebuild an accurate
         // prompt if this batch ends up merged into an existing queued one
         // (waitingForAgent path).
-        const commentCountsForSession: Record<string, number> = {};
-        for (const p of s.filePaths) {
-          commentCountsForSession[p] = commentCounts.get(p) ?? 0;
-        }
+        const commentCountsForSession = commentCountsRecord(s, commentCounts);
         let res: Response;
         try {
           res = await fetch(`/api/review-sessions/${s.id}/batch`, {
@@ -145,21 +157,25 @@ export function ReviewBanner({
       try {
         const sessionIds = s.filePaths.flatMap((p) => commentIdsByFile.get(p) ?? []);
         const unsentIds = sessionIds.filter((id) => !s.sentCommentIds.includes(id));
+        // A batch queued behind a busy agent is delivered with the finish, so
+        // the server needs the counts to rebuild the prompt even when there
+        // are no unsent ids of our own.
+        const commentCountsForSession = commentCountsRecord(s, commentCounts);
+        const body =
+          unsentIds.length > 0
+            ? {
+                prompt: buildPromptForSession(s, unsentIds),
+                commentIds: unsentIds,
+                commentCounts: commentCountsForSession,
+              }
+            : { commentCounts: commentCountsForSession };
         let res: Response;
         try {
-          if (unsentIds.length > 0) {
-            const prompt = buildPromptForSession(s, unsentIds);
-            res = await fetch(`/api/review-sessions/${s.id}/finish`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ prompt, commentIds: unsentIds }),
-            });
-          } else {
-            res = await fetch(`/api/review-sessions/${s.id}/finish`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-            });
-          }
+          res = await fetch(`/api/review-sessions/${s.id}/finish`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : 'network error';
           showToast?.(`Finish failed: ${message}`, 'error');
@@ -177,7 +193,14 @@ export function ReviewBanner({
         setBusyId(null);
       }
     },
-    [buildPromptForSession, commentIdsByFile, onHandoffSuccess, onResolved, showToast],
+    [
+      buildPromptForSession,
+      commentIdsByFile,
+      commentCounts,
+      onHandoffSuccess,
+      onResolved,
+      showToast,
+    ],
   );
 
   const handleDone = useCallback(
