@@ -83,7 +83,11 @@ import { useHeadingTracking } from './hooks/useHeadingTracking';
 import { useContextMenuItems } from './hooks/useContextMenuItems';
 import { getCopySelectionFallbackText } from './lib/copy-selection';
 import { buildNativeCopyFlavors } from './lib/copy-selection-html';
-import { rangeFromPaintedSelection, resolveSelectionMarkdown } from './lib/copy-as-markdown';
+import {
+  rangeFromLiveSelection,
+  rangeFromPaintedSelection,
+  resolveSelectionMarkdown,
+} from './lib/copy-as-markdown';
 import { getParentDir } from './lib/path-utils';
 import { useReviewSession, findActiveSessionForFile } from './hooks/useReviewSession';
 import { useOpenAddedReviewFiles } from './hooks/useOpenAddedReviewFiles';
@@ -797,15 +801,21 @@ export default function App() {
   // with blocks, and markdown rebuilt from the rendered fragment where it does
   // not. The scope is exact either way, so what lands on the clipboard is what
   // was highlighted and nothing more.
-  const copySelectionAsMarkdown = useCallback(() => {
+  //
+  // Read from the painted marks, or, for a touch or pen selection that stays
+  // pending and is never painted, from the browser's own range (#101). Null
+  // when neither is there to read.
+  const selectionAsMarkdown = useCallback((): string | null => {
     const container = proseRef.current;
-    if (!container) return;
-    const range = rangeFromPaintedSelection(container);
-    if (!range) return;
-    const resolved = resolveSelectionMarkdown(range, container, cleanMarkdownRef.current);
-    if (!resolved) return;
-    void navigator.clipboard.writeText(resolved.markdown).catch(() => {});
+    if (!container) return null;
+    const range = rangeFromPaintedSelection(container) ?? rangeFromLiveSelection(container);
+    if (!range) return null;
+    return resolveSelectionMarkdown(range, container, cleanMarkdownRef.current)?.markdown ?? null;
   }, []);
+  const copySelectionAsMarkdown = useCallback(() => {
+    const markdown = selectionAsMarkdown();
+    if (markdown) void navigator.clipboard.writeText(markdown).catch(() => {});
+  }, [selectionAsMarkdown]);
   const requestCommentFocus = useCallback(
     (commentId: string, origin: CommentFocusOrigin = 'jump') =>
       setRequestedCommentFocus({ commentId, token: Date.now(), origin }),
@@ -2132,7 +2142,7 @@ export default function App() {
     ensureCommentSurface,
     selectionRef: commentableSelectionRef,
     adoptSelection,
-    copySelectionAsMarkdown,
+    selectionAsMarkdown,
     setAutoExpandForm,
     triggerEdit,
     triggerReply,
