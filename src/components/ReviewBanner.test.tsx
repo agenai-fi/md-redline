@@ -120,7 +120,7 @@ describe('ReviewBanner', () => {
     expect(toastMessage).toContain('3 comments');
   });
 
-  it('Finish review with zero unsent comments POSTs to /finish with no prompt', async () => {
+  it('Finish review with zero unsent comments POSTs to /finish with commentCounts but no prompt', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) } as Response);
     const onResolved = vi.fn();
 
@@ -158,9 +158,12 @@ describe('ReviewBanner', () => {
       );
     });
 
-    // No body (no prompt) when there are zero unsent comments
+    // No prompt or ids when there are zero unsent comments, but the counts
+    // still go along so the server can rebuild the prompt for a queued batch.
     const callInit = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(callInit.body).toBeUndefined();
+    expect(JSON.parse(callInit.body as string)).toEqual({
+      commentCounts: { '/tmp/spec-a.md': 0, '/tmp/spec-b.md': 0 },
+    });
 
     expect(onResolved).toHaveBeenCalled();
   });
@@ -267,6 +270,7 @@ describe('ReviewBanner', () => {
     const callBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(callBody.prompt).toBeDefined();
     expect(callBody.commentIds).toEqual(['c1', 'c2']);
+    expect(callBody.commentCounts).toEqual({ '/tmp/spec-a.md': 1, '/tmp/spec-b.md': 1 });
 
     expect(onHandoffSuccess).toHaveBeenCalledWith(session);
     expect(onResolved).toHaveBeenCalled();
@@ -508,7 +512,7 @@ describe('ReviewBanner', () => {
     expect(onResolved).not.toHaveBeenCalled();
   });
 
-  it('Finish review with zero unsent comments calls /finish with no prompt body', async () => {
+  it('Finish review with zero unsent comments calls /finish with no prompt, only commentCounts', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) } as Response);
     const onResolved = vi.fn();
     const showToast = vi.fn();
@@ -549,7 +553,9 @@ describe('ReviewBanner', () => {
     });
 
     const callInit = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(callInit.body).toBeUndefined();
+    expect(JSON.parse(callInit.body as string)).toEqual({
+      commentCounts: { '/tmp/spec-a.md': 1, '/tmp/spec-b.md': 0 },
+    });
 
     expect(onResolved).toHaveBeenCalled();
     await waitFor(() => {
