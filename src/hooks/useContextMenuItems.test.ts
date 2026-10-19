@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { useContextMenuItems, type UseContextMenuItemsParams } from './useContextMenuItems';
 import type { SelectionInfo } from '../types';
 
@@ -8,7 +8,7 @@ function menu() {
   return { isOpen: false, x: 0, y: 0, open: vi.fn(), close: vi.fn() };
 }
 
-function setup(committed: SelectionInfo) {
+function setup(committed: SelectionInfo, copyRange: Range | null = null) {
   const viewerCtxMenu = menu();
   const params = {
     comments: [],
@@ -20,6 +20,7 @@ function setup(committed: SelectionInfo) {
     ensureCommentSurface: vi.fn(),
     selectionRef: { current: committed },
     adoptSelection: vi.fn(),
+    selectionCopyRange: vi.fn(() => copyRange),
     copySelectionAsMarkdown: vi.fn(),
     setAutoExpandForm: vi.fn(),
     triggerEdit: vi.fn(),
@@ -42,7 +43,7 @@ function setup(committed: SelectionInfo) {
     sidebarCtxMenu: menu(),
   } as unknown as UseContextMenuItemsParams;
   const { result } = renderHook(() => useContextMenuItems(params));
-  return { result, viewerCtxMenu };
+  return { result, viewerCtxMenu, params };
 }
 
 describe('the selection menu over a live range (#87)', () => {
@@ -77,5 +78,38 @@ describe('the selection menu over a live range (#87)', () => {
     });
     expect(opened).toBe(false);
     expect(viewerCtxMenu.open).not.toHaveBeenCalled();
+  });
+});
+
+describe('Copy as Markdown in the selection menu (#101)', () => {
+  const committed = {
+    text: 'phrase repeated twice',
+    offset: 12,
+    contextBefore: '',
+    contextAfter: '',
+  } as unknown as SelectionInfo;
+
+  type Hook = { current: ReturnType<typeof useContextMenuItems> };
+
+  function copyItem(result: Hook) {
+    act(() => {
+      result.current.handleViewerContextMenu({ type: 'selection', x: 0, y: 0 });
+    });
+    return result.current.ctxMenuItems.find(
+      (item) => (item as { label?: string }).label === 'Copy as Markdown',
+    ) as { onClick: () => void } | undefined;
+  }
+
+  it('copies the range captured when the menu opened', () => {
+    const range = document.createRange();
+    const { result, params } = setup(committed, range);
+
+    copyItem(result)!.onClick();
+    expect(params.copySelectionAsMarkdown).toHaveBeenCalledWith(range);
+  });
+
+  it('leaves the item out when there is nothing to copy', () => {
+    const { result } = setup(committed, null);
+    expect(copyItem(result)).toBeUndefined();
   });
 });

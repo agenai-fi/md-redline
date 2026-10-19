@@ -32,8 +32,16 @@ export interface UseContextMenuItemsParams {
   selectionRef: RefObject<SelectionInfo | null>;
   /** Commit and lock a selection the menu captured when it opened. */
   adoptSelection: (info: SelectionInfo) => void;
-  /** Put the selection on the clipboard as the document's markdown. */
-  copySelectionAsMarkdown: () => void;
+  /**
+   * The range a markdown copy of the selection would read: the painted marks,
+   * or the live range of a selection still pending. Null when neither is there.
+   */
+  selectionCopyRange: () => Range | null;
+  /**
+   * Put the selection on the clipboard as the document's markdown. Reads the
+   * painted marks, falling back to `captured` when nothing is painted.
+   */
+  copySelectionAsMarkdown: (captured?: Range) => void;
   setAutoExpandForm: Dispatch<SetStateAction<boolean>>;
   triggerEdit: (id: string) => void;
   triggerReply: (id: string) => void;
@@ -90,6 +98,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
     ensureCommentSurface,
     selectionRef,
     adoptSelection,
+    selectionCopyRange,
     copySelectionAsMarkdown,
     setAutoExpandForm,
     triggerEdit,
@@ -216,6 +225,12 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
         if (info.liveText && info.liveText !== sel.text) return false;
         if (info.liveOffset !== undefined && info.liveOffset !== sel.offset) return false;
 
+        // Resolved now rather than on click. A touch or pen selection is never
+        // painted, so its live range is all there is to copy (#101), and the
+        // tap on the item can clear that range before the click lands. With
+        // neither, the item would copy nothing, so it is left out.
+        const copyRange = selectionCopyRange();
+
         const items: ContextMenuEntry[] = [
           {
             label: 'Comment',
@@ -235,10 +250,14 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
               copySelectionToClipboard(sel);
             },
           },
-          {
-            label: 'Copy as Markdown',
-            onClick: copySelectionAsMarkdown,
-          },
+          ...(copyRange
+            ? [
+                {
+                  label: 'Copy as Markdown',
+                  onClick: () => copySelectionAsMarkdown(copyRange),
+                },
+              ]
+            : []),
         ];
 
         setCtxMenuItems(items);
@@ -254,6 +273,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
       handleUnresolve,
       handleDelete,
       adoptSelection,
+      selectionCopyRange,
       copySelectionAsMarkdown,
       ensureCommentSurface,
       triggerEdit,

@@ -1140,7 +1140,13 @@ Two details are load-bearing:
 - The Range comes from `rangeFromPaintedSelection`, rebuilt from the marks on
   screen. The Range the reader dragged is long gone: committing a selection
   re-runs the render effect, which replaces the container's innerHTML and takes
-  every live Range with it (see #86).
+  every live Range with it (see #86). A touch or pen selection is the
+  exception: it stays pending and is never painted, so nothing has re-rendered
+  under it and the native range is still the selection. The menu resolves the
+  range when it opens (`selectionCopyRange` in `App.tsx`: painted marks, else
+  `rangeFromLiveSelection`) and copies that, since the tap on the item can move
+  the native selection before the click lands. With neither, the item is left
+  out rather than offered and then copying nothing (#101).
 - "Flush with a block" is asked with `comparePoint` against the block's first
   and last NON-WHITESPACE text. Boundary comparison treats `(textNode, 0)` and
   `(element, 0)` as different positions in jsdom, and counting the whitespace
@@ -1148,7 +1154,9 @@ Two details are load-bearing:
   fenced block look ragged, so they all silently fell back to a rebuild.
 
 The palette entry is called `Copy selection as markdown`, spelling out its
-subject because nothing sits under the cursor there.
+subject because nothing sits under the cursor there. It is offered only for a
+committed selection, because it reads the painted marks and has no
+counterpart to the menu's capture on open.
 
 ### Copying a document selection
 The rendered view paints the pending selection as `mark.selection-highlight`
