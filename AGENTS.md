@@ -1732,8 +1732,10 @@ change, a comment being written) leaves them on the same text.
 document to the same text; a document not yet visited opens at the top. It
 reads the outgoing position in a layout-effect cleanup, before the viewer's
 own layout effect swaps the next document in, and also on `pagehide`. When the
-saved block is gone it falls back to the saved pixel offset, and a restore
-against a document still too short is retried on the next content change.
+saved block is gone it falls back to the saved pixel offset. A tab activated
+during its first load is restored when its body renders, and the restore runs
+once: one that cannot land (the block is gone and the document is now shorter
+than the offset) leaves the reader at the bottom and is not retried.
 
 Every restore uses `scrollTo({ behavior: 'instant' })`, overriding the
 `scroll-behavior: smooth` `.overflow-y-auto` gets from index.css: a restore

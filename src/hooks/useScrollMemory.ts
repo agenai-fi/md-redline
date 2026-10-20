@@ -60,15 +60,14 @@ function savePosition(path: string, position: SavedPosition): void {
 
 /**
  * Scroll to a saved position: to its block when that block is in the
- * document, otherwise to its pixel offset. Returns whether it landed; it has
- * not when the block is missing and the document is still too short for the
- * offset, as when the document has not finished rendering.
+ * document, otherwise to its pixel offset, which the browser clamps to the
+ * bottom of a document now too short for it.
  */
 function restorePosition(
   scroller: HTMLElement,
   blocks: Element | null,
   position: SavedPosition,
-): boolean {
+): void {
   const anchored =
     position.anchor && blocks
       ? viewportAnchorScrollTop(scroller, blocks, position.anchor)
@@ -77,7 +76,6 @@ function restorePosition(
   // has (index.css, `.overflow-y-auto`). A restore is not navigation the
   // reader asked for; animating it reads as the document scrolling itself.
   scroller.scrollTo({ top: anchored ?? position.top, behavior: 'instant' });
-  return anchored !== undefined || scroller.scrollTop >= position.top;
 }
 
 /**
@@ -93,10 +91,15 @@ function restorePosition(
  * effect body comes too late: the arriving document is already in, and if it
  * is shorter the browser has clamped scrollTop to fit it.
  *
- * `contentKey` is whatever changes when the document body actually renders. A
- * tab activated while still loading has neither the saved block nor the
- * height for the saved offset, so the restore is retried on the next content
- * change.
+ * `rendered` is false while the active document's body has not rendered yet:
+ * a tab activated during its first load has neither the saved block nor the
+ * height for the saved offset, so the restore waits for it. Once the body has
+ * rendered the restore runs once and is done, whether or not it landed. A
+ * saved block that is gone, in a document now shorter than the saved offset
+ * (an agent cut the section while the tab was in the background), leaves the
+ * reader at the bottom; retrying it would pull them back there on every later
+ * edit, and leaving the tab would save the unreachable target over where they
+ * scrolled to.
  *
  * Nothing prunes the map: it holds one position per file visited, for the
  * life of the tab.
@@ -105,16 +108,17 @@ export function useScrollMemory(
   containerRef: RefObject<HTMLElement | null>,
   getBlocks: () => Element | null,
   activeFilePath: string | null,
-  contentKey: unknown,
+  rendered: boolean,
 ): void {
   const prevPath = useRef<string | null>(null);
-  // A restore that has not landed yet, because the arriving document was still
-  // rendering. Null once it has.
+  // A restore waiting for the arriving document to render. Null once it has
+  // run.
   const pending = useRef<SavedPosition | null>(null);
 
   // Save on the way out: when the active document changes (the cleanup), and
   // on pagehide, since a refresh or a closed browser tab never switches away.
-  // A pending restore saves the position it was heading for.
+  // A pending restore saves the position it is waiting to restore: the
+  // reader has not seen the document yet.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el || activeFilePath === null) return;
@@ -147,8 +151,9 @@ export function useScrollMemory(
       // themselves, so leave them there.
       return;
     }
+    if (!rendered) return;
 
-    const position = pending.current;
-    pending.current = restorePosition(el, getBlocks(), position) ? null : position;
-  }, [containerRef, getBlocks, activeFilePath, contentKey]);
+    restorePosition(el, getBlocks(), pending.current);
+    pending.current = null;
+  }, [containerRef, getBlocks, activeFilePath, rendered]);
 }

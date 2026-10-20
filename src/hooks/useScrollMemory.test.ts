@@ -39,7 +39,8 @@ function makeScroller() {
 }
 
 type Scroller = ReturnType<typeof makeScroller>;
-type Props = { path: string | null; key: unknown; height?: number };
+/** `key` stands for the document's content: a new key re-renders it. */
+type Props = { path: string | null; key: unknown; height?: number; rendered?: boolean };
 
 /**
  * Mounts the hook behind a stand-in for MarkdownViewer: a layout effect that
@@ -56,12 +57,12 @@ function mount(
 ) {
   const containerRef = { current: el as unknown as HTMLElement };
   return renderHook(
-    ({ path, key, height = 10_000 }: Props) => {
+    ({ path, key, height = 10_000, rendered = true }: Props) => {
       useLayoutEffect(() => {
         el.maxScroll = height;
         el.scrollTop = Math.min(el.scrollTop, height); // a shorter document clamps it
       }, [path, key, height]);
-      useScrollMemory(containerRef, getBlocks, path, key);
+      useScrollMemory(containerRef, getBlocks, path, rendered);
     },
     { initialProps: { path, key } as Props },
   );
@@ -112,40 +113,76 @@ describe('useScrollMemory', () => {
     expect(el.scrollTop).toBe(4000);
   });
 
-  it('retries a restore that the arriving document was still too short to accept', () => {
+  it('waits to restore a document that is still on its first load', () => {
     const el = makeScroller();
     const { rerender } = mount(el, '/a.md');
 
     el.scrollTop = 2500;
     rerender({ path: '/b.md', key: 'c1' });
 
-    // Back to /a.md while it is still rendering: only part of it exists.
-    rerender({ path: '/a.md', key: 'c2', height: 400 });
-    expect(el.scrollTop).toBe(400);
+    // Back to /a.md before its body has arrived.
+    rerender({ path: '/a.md', key: 'c2', height: 0, rendered: false });
+    expect(el.scrollTop).toBe(0);
 
-    // The rest renders.
+    // The body renders.
     rerender({ path: '/a.md', key: 'c3' });
     expect(el.scrollTop).toBe(2500);
 
     // Every restore flips straight to the offset: the mount, the switch to
-    // /b.md, the clamped return to /a.md, and the retry.
-    expect(el.behaviors).toEqual(['instant', 'instant', 'instant', 'instant']);
+    // /b.md, and the return to /a.md once it rendered.
+    expect(el.behaviors).toEqual(['instant', 'instant', 'instant']);
   });
 
-  it('saves the target of a restore that has not landed yet', () => {
+  it('saves the target of a restore still waiting for its document', () => {
     const el = makeScroller();
     const { rerender } = mount(el, '/a.md');
 
     el.scrollTop = 2500;
     rerender({ path: '/b.md', key: 'c1' });
-    rerender({ path: '/a.md', key: 'c2', height: 400 });
-    // Leave /a.md while it is still short: its offset is 2500, not 400.
+    rerender({ path: '/a.md', key: 'c2', height: 0, rendered: false });
+    // Leave /a.md before it has rendered: its offset is 2500, not 0.
     rerender({ path: '/b.md', key: 'c3' });
 
     expect(
       JSON.parse(sessionStorage.getItem('md-redline-scroll-positions') ?? 'null'),
     ).toMatchObject({
       '/a.md': { top: 2500 },
+    });
+  });
+
+  /**
+   * Leave /a.md at 2500 and come back to a version cut to 1000px while it was
+   * in the background: the restore clamps to the bottom.
+   */
+  function returnToShortenedDocument() {
+    const el = makeScroller();
+    const { rerender } = mount(el, '/a.md');
+    el.scrollTop = 2500;
+    rerender({ path: '/b.md', key: 'c1' });
+    rerender({ path: '/a.md', key: 'c2', height: 1000 });
+    expect(el.scrollTop).toBe(1000);
+    return { el, rerender };
+  }
+
+  it('does not retry a restore that could not land when the document changes again', () => {
+    const { el, rerender } = returnToShortenedDocument();
+
+    el.scrollTop = 300;
+    rerender({ path: '/a.md', key: 'c3', height: 1100 });
+
+    expect(el.scrollTop).toBe(300);
+  });
+
+  it('saves where the reader scrolled after a restore that could not land', () => {
+    const { el, rerender } = returnToShortenedDocument();
+
+    el.scrollTop = 300;
+    rerender({ path: '/b.md', key: 'c3' });
+
+    expect(
+      JSON.parse(sessionStorage.getItem('md-redline-scroll-positions') ?? 'null'),
+    ).toMatchObject({
+      '/a.md': { top: 300 },
     });
   });
 

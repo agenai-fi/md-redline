@@ -189,6 +189,9 @@ export default function App() {
     reloadFile,
     retryAllAccessDenied,
   } = useTabs({ onSaveError, onExternalContent: onReloadedContent, onPathResolved });
+  // The active tab has no content to show yet. A reload keeps the old content
+  // on screen while it loads, so it is not a first load.
+  const firstLoadInProgress = isLoading && !rawMarkdown;
 
   // Dirty-tab close guard: when closing tabs that have unsaved changes
   // (e.g. save failed), show a confirmation dialog before discarding.
@@ -1609,10 +1612,10 @@ export default function App() {
 
   // Each document keeps its own place in the scroll container, which is shared
   // between them, as a block in the viewer's container so it comes back to the
-  // same text. `html` is the content key: a tab activated before its body has
-  // rendered has neither the block nor the height to reach.
+  // same text. A tab activated during its first load has neither the block nor
+  // the height to reach, so the restore waits for the body.
   const getViewerBlocks = useCallback(() => viewerRef.current?.getContainer() ?? null, []);
-  useScrollMemory(containerRef, getViewerBlocks, activeFilePath, html);
+  useScrollMemory(containerRef, getViewerBlocks, activeFilePath, !firstLoadInProgress);
 
   const handleHeadingNavigate = useCallback(
     (id: string) => {
@@ -2969,8 +2972,7 @@ export default function App() {
   // if a request never answers.
   const [startupLaidOut, setStartupLaidOut] = useState(false);
   const startupTargetKnown = initialTargetKnown && reviewTargetKnown;
-  const firstDocumentSettled =
-    startupTargetKnown && (!activeFilePath || !(isLoading && !rawMarkdown));
+  const firstDocumentSettled = startupTargetKnown && (!activeFilePath || !firstLoadInProgress);
   if (!startupLaidOut && settingsHydrated && reviewSessionsFetched && firstDocumentSettled) {
     setStartupLaidOut(true);
   }
@@ -3398,9 +3400,8 @@ export default function App() {
                             // A tab still on its first load has an empty sheet sized
                             // for a document with no comments; the loaded one may
                             // reserve the rail's gutter and jump wider and left in
-                            // one frame. Show only the loaded sheet. A reload keeps
-                            // the old content on screen, so it stays visible.
-                            visibility: isLoading && !rawMarkdown ? 'hidden' : undefined,
+                            // one frame. Show only the loaded sheet.
+                            visibility: firstLoadInProgress ? 'hidden' : undefined,
                             minHeight: railShown
                               ? `max(100%, ${marginLayout.layerHeight + 120}px)`
                               : '100%',
