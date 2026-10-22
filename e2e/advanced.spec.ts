@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -222,6 +222,79 @@ test.describe('Multi-tab support', () => {
 
     await addComment(page, 'brute force attacks', 'Second tab badge comment');
     await expect(badge).toHaveText('2');
+  });
+
+  test('a fully resolved file shows no tab badge, in the strip or the tab list', async ({
+    page,
+  }) => {
+    // A resolved comment counts as no longer present, so a file whose threads
+    // are all resolved renders exactly like one with no comments. The resolve
+    // workflow is on because that is the mode that used to draw an outlined
+    // resolved-count badge in both places.
+    const marker = (id: string, anchor: string, status: 'open' | 'resolved') =>
+      `<!-- @comment${JSON.stringify({
+        id,
+        anchor,
+        text: `Comment ${id}`,
+        author: 'User',
+        timestamp: '2024-01-01T00:00:00.000Z',
+        status,
+        replies: [],
+      })} -->`;
+    writeFileSync(
+      FIXTURE_1,
+      FIXTURE_1_ORIGINAL.replace(
+        'valid credentials',
+        `${marker('r1', 'valid credentials', 'resolved')}valid credentials`,
+      ).replace(
+        'brute force attacks',
+        `${marker('r2', 'brute force attacks', 'resolved')}brute force attacks`,
+      ),
+    );
+    // Control: one open comment in another tab, so the badge locator is shown
+    // to find a badge where one exists.
+    writeFileSync(
+      OVERFLOW_FIXTURES[0],
+      FIXTURE_1_ORIGINAL.replace('# Test Document', '# Overflow Tab 1').replace(
+        'valid credentials',
+        `${marker('o1', 'valid credentials', 'open')}valid credentials`,
+      ),
+    );
+
+    await page.setViewportSize({ width: 900, height: 900 });
+    await openFixture(page, FIXTURE_1);
+    await page.locator('button[title*="Settings"]').click();
+    const settingsPanel = page.locator('.fixed.inset-0');
+    await settingsPanel
+      .locator('label', { hasText: 'Enable resolve workflow' })
+      .locator('button[role="switch"]')
+      .click();
+    await page.keyboard.press('Escape');
+    await expect(settingsPanel).not.toBeVisible();
+
+    const countBadge = (scope: Locator, fileName: string) =>
+      scope
+        .locator('button', { hasText: fileName })
+        .first()
+        .locator('span.rounded-full', { hasText: /\d/ });
+    const tabBar = page.locator('.h-11');
+
+    // Active tab.
+    await expect(countBadge(tabBar, 'test-doc.md')).toHaveCount(0);
+
+    for (const [index, fixture] of OVERFLOW_FIXTURES.entries()) {
+      await openFile(page, fixture, `Overflow Tab ${index + 1}`);
+    }
+
+    // Inactive tab, in the strip and in the overflow list.
+    await expect(countBadge(tabBar, 'overflow-tab-1.md')).toHaveText('1');
+    await expect(countBadge(tabBar, 'test-doc.md')).toHaveCount(0);
+
+    await page.getByTestId('tab-list-button').click();
+    const tabListMenu = page.getByTestId('tab-list-menu');
+    await expect(tabListMenu).toBeVisible();
+    await expect(countBadge(tabListMenu, 'overflow-tab-1.md')).toHaveText('1');
+    await expect(countBadge(tabListMenu, 'test-doc.md')).toHaveCount(0);
   });
 
   test('Cmd+Shift+[ / ] cycle tabs', async ({ page }) => {

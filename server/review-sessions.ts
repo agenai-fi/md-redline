@@ -505,12 +505,7 @@ export class ReviewSessionStore {
     if (s.queuedBatch) {
       const queued = s.queuedBatch;
       s.queuedBatch = null;
-      const prompt = buildAddressCommentsPrompt({
-        filePaths: s.filePaths,
-        commentCounts: queued.commentCountsByPath,
-        enableResolve: s.enableResolve,
-        commentIds: queued.commentIds,
-      });
+      const prompt = this.batchPrompt(s, queued.commentIds, queued.commentCountsByPath);
       const resolvedWaiter = s.waiter;
       s.resolver({ status: 'batch', prompt, commentIds: queued.commentIds });
       // Create a fresh waiter for the next poll cycle.
@@ -761,6 +756,23 @@ export class ReviewSessionStore {
   }
 
   /**
+   * Prompt for a batch the server assembled itself (a queued batch, alone or
+   * folded into a finish) rather than one the browser built.
+   */
+  private batchPrompt(
+    s: InternalSession,
+    commentIds: string[],
+    commentCountsByPath: Map<string, number>,
+  ): string {
+    return buildAddressCommentsPrompt({
+      filePaths: s.filePaths,
+      commentCounts: commentCountsByPath,
+      enableResolve: s.enableResolve,
+      commentIds,
+    });
+  }
+
+  /**
    * Returns true if a queued batch is pending delivery for this session.
    * The actual delivery happens inside waitForSession when it is next called.
    * This method exists so the route layer can log/detect queued delivery;
@@ -782,7 +794,21 @@ export class ReviewSessionStore {
     };
   }
 
-  finish(id: string, prompt?: string, commentIds?: string[]): boolean {
+  /**
+   * Close the session with the user's final send. A batch still parked in
+   * queueBatch (the agent was busy or between polls) rides along: its ids are
+   * unioned with `commentIds` and the terminal prompt is rebuilt for the
+   * union, replacing any client prompt, the same way waitForSession rebuilds
+   * a queued batch. `commentCountsByPath` is the browser's current per-file
+   * count and wins over the count recorded at queue time. Without a queued
+   * batch the client prompt passes through unchanged.
+   */
+  finish(
+    id: string,
+    prompt?: string,
+    commentIds?: string[],
+    commentCountsByPath?: Map<string, number>,
+  ): boolean {
     const s = this.sessions.get(id);
     if (!s || s.status !== 'open') return false;
 
@@ -795,19 +821,35 @@ export class ReviewSessionStore {
     // abort() / setSessionDone.
     const aborted = this.abortAsks(id, 'session_cancelled');
 
-    if (commentIds) {
-      for (const cid of commentIds) {
+    // A queued batch is delivered with this result instead of dropped: its
+    // ids are already in sentCommentIds, so the browser's Send & finish does
+    // not include them in `commentIds`, and discarding the queue here would
+    // lose them while they still read as sent.
+    const queued = s.queuedBatch;
+    s.queuedBatch = null;
+    let finalPrompt = prompt;
+    let finalIds = commentIds;
+    if (queued) {
+      finalIds = Array.from(new Set([...queued.commentIds, ...(commentIds ?? [])]));
+      // The browser's counts are taken at finish, so they win over the ones
+      // recorded when the batch was queued.
+      const counts = new Map([...queued.commentCountsByPath, ...(commentCountsByPath ?? [])]);
+      finalPrompt = this.batchPrompt(s, finalIds, counts);
+    }
+
+    if (finalIds) {
+      for (const cid of finalIds) {
         if (!s.sentCommentIds.includes(cid)) {
           s.sentCommentIds.push(cid);
         }
       }
     }
 
-    // Drop any queued batch — the session is closing.
-    s.queuedBatch = null;
     s.status = 'done';
     s.terminalAt = new Date();
-    const result: ReviewResult = prompt ? { status: 'done', prompt } : { status: 'done' };
+    const result: ReviewResult = finalPrompt
+      ? { status: 'done', prompt: finalPrompt }
+      : { status: 'done' };
     s.terminalResult = result;
     s.resolver(result);
     // Unblock any pending mdr_wait. For an agent-origin session, /finish was

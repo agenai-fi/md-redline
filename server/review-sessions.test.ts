@@ -589,6 +589,76 @@ describe('ReviewSessionStore', () => {
     });
   });
 
+  describe('queued batch when the session ends', () => {
+    // Puts the session in the state the bug needs: c1 delivered to the agent,
+    // which is now busy (waitingForAgent), then c2 queued behind it.
+    function sessionWithQueuedC2(filePaths: string[] = ['/tmp/a.md']) {
+      const session = store.createSession({ filePaths, enableResolve: false });
+      store.beginWaitPark(session.id);
+      store.waitForSession(session.id);
+      store.sendBatch(session.id, 'batch1', ['c1']);
+      store.queueBatch(session.id, ['c2'], new Map([[filePaths[0], 2]]));
+      return session;
+    }
+
+    it('finish() delivers a queued batch in the terminal result when no prompt is given', async () => {
+      const session = sessionWithQueuedC2();
+
+      expect(store.finish(session.id)).toBe(true);
+
+      store.beginWaitPark(session.id);
+      const result = await store.waitForSession(session.id);
+      expect(result.status).toBe('done');
+      if (result.status === 'done') {
+        expect(result.prompt).toMatch(/`c2`/);
+      }
+      expect(store.getQueuedBatch(session.id)).toBeNull();
+      expect(store.getSession(session.id)?.sentCommentIds).toEqual(['c1', 'c2']);
+    });
+
+    it('finish() scopes the terminal prompt to the queued ids plus the finish ids, with the browser counts', async () => {
+      const session = sessionWithQueuedC2(['/tmp/a.md', '/tmp/b.md']);
+      // Queued counts: a=2, b=5. The browser's counts at finish replace both.
+      store.queueBatch(session.id, ['c2'], new Map([['/tmp/b.md', 5]]));
+
+      store.finish(
+        session.id,
+        'CLIENT PROMPT',
+        ['c3', 'c2'],
+        new Map([
+          ['/tmp/a.md', 4],
+          ['/tmp/b.md', 1],
+        ]),
+      );
+
+      store.beginWaitPark(session.id);
+      const result = await store.waitForSession(session.id);
+      expect(result.status).toBe('done');
+      if (result.status === 'done') {
+        // The server-rebuilt prompt replaces the client's.
+        expect(result.prompt).not.toBe('CLIENT PROMPT');
+        expect(result.prompt).toMatch(/`c2`, `c3`/);
+        expect(result.prompt).not.toMatch(/`c1`/);
+        expect(result.prompt).toContain('/tmp/a.md (4 comments)');
+        expect(result.prompt).toContain('/tmp/b.md (1 comment)');
+        // System instructions appear exactly once.
+        expect((result.prompt!.match(/## Comment format/g) ?? []).length).toBe(1);
+      }
+      expect(store.getSession(session.id)?.sentCommentIds).toEqual(['c1', 'c2', 'c3']);
+    });
+
+    it('finish() without a queued batch passes the client prompt through unchanged', async () => {
+      const session = store.createSession({ filePaths: ['/tmp/a.md'], enableResolve: false });
+      store.beginWaitPark(session.id);
+      const waiter = store.waitForSession(session.id);
+
+      store.finish(session.id, 'CLIENT PROMPT', ['c1'], new Map([['/tmp/a.md', 1]]));
+
+      expect(await waiter).toEqual({ status: 'done', prompt: 'CLIENT PROMPT' });
+      expect(store.getSession(session.id)?.sentCommentIds).toEqual(['c1']);
+    });
+  });
+
   describe('releaseAsk', () => {
     it('resolves the ask waiter with released status', async () => {
       const store = new ReviewSessionStore();

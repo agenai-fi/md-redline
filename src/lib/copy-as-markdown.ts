@@ -185,3 +185,20 @@ export function rangeFromPaintedSelection(container: HTMLElement): Range | null 
   range.setEndAfter(last);
   return range;
 }
+
+/**
+ * A copy of the browser's own selection, when it lies inside `container`.
+ *
+ * This is the selection a touch or pen leaves: it stays pending, so the viewer
+ * never paints it and `rangeFromPaintedSelection` finds nothing, but nothing
+ * has re-rendered under it either, so the native range is still the selection
+ * (#101). Cloned because the live one belongs to the browser and moves with
+ * the next tap.
+ */
+export function rangeFromLiveSelection(container: HTMLElement): Range | null {
+  const selection = container.ownerDocument.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (range.collapsed || !container.contains(range.commonAncestorContainer)) return null;
+  return range.cloneRange();
+}

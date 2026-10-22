@@ -85,4 +85,88 @@ test.describe('Copy as Markdown', () => {
     await selectBlock(page, 'table');
     expect(await copyAsMarkdown(page)).toContain('| Column | Header with **bold** |');
   });
+
+  // A touch or pen selection stays pending and is never painted, so the copy
+  // has no marks to read. It used to offer the item and then copy nothing
+  // (#101). The native range is still live, and that is what it copies now.
+  for (const pointerType of ['touch', 'pen']) {
+    test(`a ${pointerType} selection copies through the menu too`, async ({ page }) => {
+      await openFixture(page);
+      // The list test above copies this same text, and the clipboard can
+      // outlive a test, so start from empty or a no-op copy would pass.
+      await page.evaluate(() => navigator.clipboard.writeText(''));
+      await page.evaluate((pt) => {
+        const el = document.querySelector('.prose ul');
+        if (!el) throw new Error('block not found: ul');
+        el.dispatchEvent(new PointerEvent('pointerdown', { pointerType: pt, bubbles: true }));
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }, pointerType);
+      await expect(page.getByTestId('pending-selection-commit')).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('mark.selection-highlight')).toHaveCount(0);
+
+      await page
+        .locator('.prose ul li')
+        .first()
+        .dispatchEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+      await page
+        .locator('.context-menu-enter')
+        .getByText('Copy as Markdown', { exact: true })
+        .click({ timeout: 5000 });
+
+      await expect
+        .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+        .toBe('- List item with **bold inside it**\n- Second item for the ordered sibling below');
+    });
+  }
+});
+
+// The tests above click the item with a mouse. On a tablet it is a real tap,
+// which can move or clear the native selection before the click lands; the
+// menu captures the range when it opens so the copy does not depend on it.
+test.describe('Copy as Markdown (real touch events)', () => {
+  test.use({ hasTouch: true });
+
+  test.beforeEach(async ({ context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  });
+
+  async function tap(page: Page, locator: ReturnType<Page['locator']>) {
+    const box = await locator.boundingBox();
+    if (!box) throw new Error('element has no bounding box');
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  }
+
+  test('a real tap on the item copies a touch selection', async ({ page }) => {
+    await openFixture(page);
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    // A real tap first, so the pointer type comes from a genuine touch.
+    await tap(page, page.locator('.prose ul li').first());
+    await page.evaluate(() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector('.prose ul')!);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    await expect(page.getByTestId('pending-selection-commit')).toBeVisible({ timeout: 5000 });
+
+    // A long-press opens the menu on a tablet; Playwright has no long-press,
+    // so the contextmenu it ends in is dispatched directly.
+    await page
+      .locator('.prose ul li')
+      .first()
+      .dispatchEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    await tap(
+      page,
+      page.locator('.context-menu-enter').getByText('Copy as Markdown', { exact: true }),
+    );
+
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe('- List item with **bold inside it**\n- Second item for the ordered sibling below');
+  });
 });

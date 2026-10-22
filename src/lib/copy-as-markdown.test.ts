@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { rangeFromPaintedSelection, resolveSelectionMarkdown } from './copy-as-markdown';
+import {
+  rangeFromLiveSelection,
+  rangeFromPaintedSelection,
+  resolveSelectionMarkdown,
+} from './copy-as-markdown';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -173,5 +177,41 @@ describe('rangeFromPaintedSelection', () => {
 
   it('returns null when nothing is painted', () => {
     expect(rangeFromPaintedSelection(mount('<p>Nothing selected</p>'))).toBeNull();
+  });
+});
+
+describe('rangeFromLiveSelection', () => {
+  function select(node: Node, start: number, end: number) {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  it('copies the native range when it lies inside the container', () => {
+    const container = mount('<p>The migration runs now.</p>');
+    select(container.querySelector('p')!.firstChild!, 4, 13);
+
+    const range = rangeFromLiveSelection(container)!;
+    expect(range.toString()).toBe('migration');
+    // A copy, so the next tap moving the selection leaves it alone.
+    expect(range).not.toBe(document.getSelection()!.getRangeAt(0));
+  });
+
+  it('returns null for a collapsed selection', () => {
+    const container = mount('<p>The migration runs now.</p>');
+    select(container.querySelector('p')!.firstChild!, 4, 4);
+    expect(rangeFromLiveSelection(container)).toBeNull();
+  });
+
+  it('returns null for a selection outside the container', () => {
+    const container = mount('<p>The migration runs now.</p>');
+    const outside = document.createElement('p');
+    outside.textContent = 'Elsewhere on the page';
+    document.body.appendChild(outside);
+    select(outside.firstChild!, 0, 9);
+    expect(rangeFromLiveSelection(container)).toBeNull();
   });
 });

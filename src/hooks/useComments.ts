@@ -147,63 +147,50 @@ export function useComments(params: UseCommentsParams) {
   // Agent-initiated comments (mdr_ask questions) are excluded — they're tracked
   // and surfaced separately via the "Awaiting your reply" section, and they
   // must NOT be sent back to the agent as part of a user batch.
-  const { commentCounts, resolvedCommentCounts, commentIdsByFile, agentCommentCounts } =
-    useMemo(() => {
-      const counts = new Map<string, number>();
-      const resolvedCounts = new Map<string, number>();
-      const idsByFile = new Map<string, string[]>();
-      const agentCounts = new Map<string, number>();
-      for (const tab of tabs) {
-        if (tab.filePath === activeFilePath) {
-          const userComments = comments.filter((c) => !c.agentInitiated);
-          const count = enableResolve
-            ? userComments.filter((c) => getEffectiveStatus(c) !== 'resolved').length
-            : userComments.length;
-          counts.set(tab.filePath, count);
+  const { commentCounts, commentIdsByFile, agentCommentCounts } = useMemo(() => {
+    const counts = new Map<string, number>();
+    const idsByFile = new Map<string, string[]>();
+    const agentCounts = new Map<string, number>();
+    for (const tab of tabs) {
+      if (tab.filePath === activeFilePath) {
+        const userComments = comments.filter((c) => !c.agentInitiated);
+        const openComments = userComments.filter((c) => getEffectiveStatus(c) !== 'resolved');
+        counts.set(tab.filePath, openComments.length);
+        idsByFile.set(
+          tab.filePath,
+          openComments.map((c) => c.id),
+        );
+        const agentComments = comments.filter(
+          (c) => c.agentInitiated && getEffectiveStatus(c) !== 'resolved',
+        );
+        agentCounts.set(tab.filePath, agentComments.length);
+      } else {
+        try {
+          const { comments: tabComments } = parseComments(tab.rawMarkdown);
+          const userTabComments = tabComments.filter((c) => !c.agentInitiated);
+          const openTabComments = userTabComments.filter(
+            (c) => getEffectiveStatus(c) !== 'resolved',
+          );
+          counts.set(tab.filePath, openTabComments.length);
           idsByFile.set(
             tab.filePath,
-            userComments.map((c) => c.id),
+            openTabComments.map((c) => c.id),
           );
-          if (enableResolve) {
-            resolvedCounts.set(
-              tab.filePath,
-              userComments.filter((c) => getEffectiveStatus(c) === 'resolved').length,
-            );
-          }
-          const agentComments = comments.filter((c) => c.agentInitiated);
-          agentCounts.set(tab.filePath, agentComments.length);
-        } else {
-          try {
-            const { comments: tabComments } = parseComments(tab.rawMarkdown);
-            const userTabComments = tabComments.filter((c) => !c.agentInitiated);
-            const count = enableResolve
-              ? userTabComments.filter((c) => getEffectiveStatus(c) !== 'resolved').length
-              : userTabComments.length;
-            counts.set(tab.filePath, count);
-            idsByFile.set(
-              tab.filePath,
-              userTabComments.map((c) => c.id),
-            );
-            if (enableResolve) {
-              resolvedCounts.set(
-                tab.filePath,
-                userTabComments.filter((c) => getEffectiveStatus(c) === 'resolved').length,
-              );
-            }
-            const agentTabComments = tabComments.filter((c) => c.agentInitiated);
-            agentCounts.set(tab.filePath, agentTabComments.length);
-          } catch {
-            counts.set(tab.filePath, 0);
-          }
+          const agentTabComments = tabComments.filter(
+            (c) => c.agentInitiated && getEffectiveStatus(c) !== 'resolved',
+          );
+          agentCounts.set(tab.filePath, agentTabComments.length);
+        } catch {
+          counts.set(tab.filePath, 0);
         }
       }
-      return {
-        commentCounts: counts,
-        resolvedCommentCounts: resolvedCounts,
-        commentIdsByFile: idsByFile,
-        agentCommentCounts: agentCounts,
-      };
-    }, [tabs, activeFilePath, comments, enableResolve]);
+    }
+    return {
+      commentCounts: counts,
+      commentIdsByFile: idsByFile,
+      agentCommentCounts: agentCounts,
+    };
+  }, [tabs, activeFilePath, comments]);
 
   // Sent threads the reviewer replied to after the agent's last reply: pending
   // again until the agent answers, so a reply alone enables Send.
@@ -224,9 +211,7 @@ export function useComments(params: UseCommentsParams) {
     return ids;
   }, [tabs, activeFilePath, comments]);
 
-  const commentCount = enableResolve
-    ? comments.filter((c) => getEffectiveStatus(c) !== 'resolved').length
-    : comments.length;
+  const commentCount = comments.filter((c) => getEffectiveStatus(c) !== 'resolved').length;
 
   // Core update helper — synchronously updates the ref so back-to-back
   // mutations (e.g. rapid keyboard shortcuts) each read the latest state.
@@ -449,7 +434,6 @@ export function useComments(params: UseCommentsParams) {
     missingAnchors,
     newOrphanIds,
     commentCounts,
-    resolvedCommentCounts,
     commentIdsByFile,
     userRepliedLastIds,
     agentCommentCounts,

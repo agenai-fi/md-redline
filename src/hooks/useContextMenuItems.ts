@@ -32,8 +32,11 @@ export interface UseContextMenuItemsParams {
   selectionRef: RefObject<SelectionInfo | null>;
   /** Commit and lock a selection the menu captured when it opened. */
   adoptSelection: (info: SelectionInfo) => void;
-  /** Put the selection on the clipboard as the document's markdown. */
-  copySelectionAsMarkdown: () => void;
+  /**
+   * The selection as the document's markdown, or null when there is nothing
+   * painted and no live range to read it from.
+   */
+  selectionAsMarkdown: () => string | null;
   setAutoExpandForm: Dispatch<SetStateAction<boolean>>;
   triggerEdit: (id: string) => void;
   triggerReply: (id: string) => void;
@@ -90,7 +93,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
     ensureCommentSurface,
     selectionRef,
     adoptSelection,
-    copySelectionAsMarkdown,
+    selectionAsMarkdown,
     setAutoExpandForm,
     triggerEdit,
     triggerReply,
@@ -216,6 +219,14 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
         if (info.liveText && info.liveText !== sel.text) return false;
         if (info.liveOffset !== undefined && info.liveOffset !== sel.offset) return false;
 
+        // Resolved to text now rather than on click. A touch or pen selection
+        // is never painted, so its live range is all there is to read (#101),
+        // and by the click that range may be gone: the tap can move the native
+        // selection, and a repaint while the menu is open (a Mermaid diagram
+        // finishing, a file reload) replaces the nodes it points into. With
+        // nothing to read, the item would copy nothing, so it is left out.
+        const markdown = selectionAsMarkdown();
+
         const items: ContextMenuEntry[] = [
           {
             label: 'Comment',
@@ -235,10 +246,16 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
               copySelectionToClipboard(sel);
             },
           },
-          {
-            label: 'Copy as Markdown',
-            onClick: copySelectionAsMarkdown,
-          },
+          ...(markdown !== null
+            ? [
+                {
+                  label: 'Copy as Markdown',
+                  onClick: () => {
+                    void navigator.clipboard.writeText(markdown).catch(() => {});
+                  },
+                },
+              ]
+            : []),
         ];
 
         setCtxMenuItems(items);
@@ -254,7 +271,7 @@ export function useContextMenuItems(params: UseContextMenuItemsParams) {
       handleUnresolve,
       handleDelete,
       adoptSelection,
-      copySelectionAsMarkdown,
+      selectionAsMarkdown,
       ensureCommentSurface,
       triggerEdit,
       triggerReply,

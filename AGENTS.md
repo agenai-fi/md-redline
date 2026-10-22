@@ -220,8 +220,8 @@ chooses, not about every byte that can reach disk during a request.
 - `POST /api/review-sessions` — create a session (`{ filePaths, enableResolve?, origin?: 'user' | 'agent', clientId? }`). `enableResolve` defaults to the READER's saved setting, falling back to `DEFAULT_ENABLE_RESOLVE` in `src/lib/settings.ts` (currently resolve mode) when none is saved; an explicit boolean from the caller still wins. The two used to be independent, which let the sidebar show Open/Resolved while the agent had been handed remove-mode instructions telling it to delete every marker it addressed, destroying any comment that was a question. `origin` defaults to `'user'`; the `mdr_comment` MCP tool passes `'agent'` to enable agent-specific banner states and GC behavior. `clientId` is an opaque caller identity that scopes dedupe: two different agents on the same files get distinct sessions, while the same agent batching successive calls reuses its own. Reuse needs an exact match on the requested file set, compared against both the session's current files and the files it started with, so a session widened by `mdr_add_files` is found again when its original files are asked for (#117). A larger session is never joined for a smaller request, since one Done would then end both reviews. The MCP client sends a process-scoped UUID, or `MD_REDLINE_CLIENT_ID` when set (`resolveClientId` in `server/mcp-stdio/client.ts`), for clients that start a fresh `mdr mcp` per tool call and would otherwise never match their own session. It must be at most 256 characters, checked when `mdr mcp` starts.
 - `GET /api/review-sessions` — list open sessions
 - `GET /api/review-sessions/:id` — get session details
-- `POST /api/review-sessions/:id/batch` — send a batch of comments to the waiting agent
-- `POST /api/review-sessions/:id/finish` — send final batch and close session. Pending asks do not block finish: inline replies found in the markers are delivered to the agent first, and remaining unanswered asks close as `done_without_reply` with their markers preserved (flags cleared).
+- `POST /api/review-sessions/:id/batch` — send a batch of comments to the waiting agent. When the agent is busy with the previous batch, or no `/wait` poll is parked, the batch is queued instead (`{ ok: true, queued: true }`): its ids count as sent right away, and the next `/wait` delivers it with a prompt rebuilt from `commentCounts`. Optional `commentCounts` (`{ [filePath]: n }`) keeps the per-file counts in that prompt accurate; keys outside the session's files are ignored.
+- `POST /api/review-sessions/:id/finish` — send final batch and close session (`{ prompt?, commentIds?, commentCounts? }`). A batch still queued is delivered with the finishing result, not dropped: the terminal prompt is rebuilt for the queued ids plus `commentIds`, with `commentCounts` taking precedence over the counts recorded at queue time, and replaces any `prompt` sent. With nothing queued the `prompt` passes through unchanged. Pending asks do not block finish: inline replies found in the markers are delivered to the agent first, and remaining unanswered asks close as `done_without_reply` with their markers preserved (flags cleared).
 - `POST /api/review-sessions/:id/files` — add files to an open session (`{ filePaths }`, #117). Paths go through the same checks as creating a session (`resolveReviewPaths`: canonical, allowed roots, `.md` only), at most 64 per call and 256 per session (the total is checked in `ReviewSessionStore.addFiles` on the live list, so concurrent adds can't overshoot). Records each added file's time in `fileAddedAt`. Returns `{ sessionId, filePaths, added }`; 404 for an unknown session, 409 for one that has ended. A tab showing the session opens each newly added file in the background and toasts "{author} added b.md to this review" (`useOpenAddedReviewFiles`). A file counts as added when it appears after the tab first saw the session, or, for the review the page's `?review=` link opened, when its `fileAddedAt` is after the page loaded (covers a file added before the first poll; other reviews skip this, so a long-lived tab that only now shows a review doesn't open its older additions). Each opens at most once per page, so a file the reader closed is never reopened.
 - `POST /api/review-sessions/:id/abort` — cancel session
 - `POST /api/review-sessions/:id/heartbeat` — keep session alive (each browser tab sends every 10s for sessions covering a file it has open)
@@ -658,7 +658,8 @@ create a user-initiated review session. The server opens the browser with
 `?review=<sessionId>`, and the tool long-polls `/wait` (90s re-poll cycle; pass the
 returned sessionId back to continue) until the human sends batches or finishes. Each
 batch returns `{ status: 'batch', prompt, commentIds }`; finish returns
-`{ status: 'done', prompt?, commentIds? }`.
+`{ status: 'done', prompt?, commentIds? }`. A batch queued while the agent was busy
+is folded into that finish result, so the agent still sees those comments.
 
 **`mdr_ask`** — Called with
 `{ sessionId, questions: [{ filePath, anchor, text, author?, contextBefore?, contextAfter? }] }`
@@ -1139,7 +1140,15 @@ Two details are load-bearing:
 - The Range comes from `rangeFromPaintedSelection`, rebuilt from the marks on
   screen. The Range the reader dragged is long gone: committing a selection
   re-runs the render effect, which replaces the container's innerHTML and takes
-  every live Range with it (see #86).
+  every live Range with it (see #86). A touch or pen selection is the
+  exception: it stays pending and is never painted, so nothing has re-rendered
+  under it and the native range is still the selection. The menu resolves the
+  markdown when it opens (`selectionAsMarkdown` in `App.tsx`: painted marks,
+  else `rangeFromLiveSelection`) and the click copies that text. A range kept
+  until the click would not survive: the tap can move the native selection,
+  and a repaint while the menu is open (a Mermaid diagram finishing, a file
+  reload) replaces the nodes it points into. With nothing to resolve, the item
+  is left out rather than offered and then copying nothing (#101).
 - "Flush with a block" is asked with `comparePoint` against the block's first
   and last NON-WHITESPACE text. Boundary comparison treats `(textNode, 0)` and
   `(element, 0)` as different positions in jsdom, and counting the whitespace
@@ -1147,7 +1156,8 @@ Two details are load-bearing:
   fenced block look ragged, so they all silently fell back to a rebuild.
 
 The palette entry is called `Copy selection as markdown`, spelling out its
-subject because nothing sits under the cursor there.
+subject because nothing sits under the cursor there. It is offered only for a
+committed selection, which it reads from the painted marks when it runs.
 
 ### Copying a document selection
 The rendered view paints the pending selection as `mark.selection-highlight`
@@ -1343,9 +1353,10 @@ The kebab is hidden entirely when the file has no comments. These duplicate
 density and the drawer, so the kebab is the one route that works in Anchored
 density too.
 
-Tab badges count ALL open comments including
-agent-initiated ones (`tabCommentCounts` in App); the handoff button keeps
-the sendable-only map. Inline code in prose renders neutral (`--theme-text`
+Tab badges count open comments, user and agent-initiated alike
+(`tabCommentCounts` in App), never resolved ones whatever the resolve flag,
+so a fully resolved file shows no badge; the handoff button keeps the
+sendable-only map. Inline code in prose renders neutral (`--theme-text`
 on `--theme-bg-inset`), never the crimson accent:
 
 - **Anchored** (default): cards align to their document anchors. Cards are
@@ -1704,6 +1715,39 @@ by its full heading chain (e.g. "Requirements > Functional Requirements"),
 truncating each segment past 28 characters. Each segment is a button that
 jumps to that heading. Hidden in raw view and while the diff overlay is
 showing, and disappears again once scrolled back above the first heading.
+
+### Reading position
+The reader's place is kept as a block, not a pixel offset
+(`src/lib/viewport-anchor.ts`): the topmost top-level block still in view,
+identified by content (tag, text length, text prefix) and, for identical
+blocks, by which copy it is, plus its offset from the viewport top. The
+viewer rebuilds its subtree with innerHTML on every render, so no node is
+kept for native scroll anchoring to hold onto; the anchor is found again by
+content instead. A reader at scrollTop 0 is not anchored and stays at the top.
+
+Two things use it. `MarkdownViewer` captures the anchor before each rebuild
+and scrolls it back afterwards, so an edit above the reader (an agent's
+change, a comment being written) leaves them on the same text.
+`useScrollMemory` saves one position per open document in sessionStorage under
+`md-redline-scroll-positions`, so switching tabs or refreshing returns each
+document to the same text; a document not yet visited opens at the top. It
+reads the outgoing position in a layout-effect cleanup, before the viewer's
+own layout effect swaps the next document in, and also on `pagehide`. When the
+saved block is gone it falls back to the saved pixel offset. A tab activated
+during its first load is restored when its body renders, and the restore runs
+once: one that cannot land (the block is gone and the document is now shorter
+than the offset) leaves the reader at the bottom and is not retried.
+
+Every restore uses `scrollTo({ behavior: 'instant' })`, overriding the
+`scroll-behavior: smooth` `.overflow-y-auto` gets from index.css: a restore
+isn't navigation the reader asked for, and animating it reads as the document
+scrolling itself.
+
+Reloading a `?review=` URL reopens the session's files instead of the saved tab
+session, so the active document is kept too (`src/lib/active-tab.ts`):
+sessionStorage, keyed by review id, and reopened on reload while the session
+still includes it. A new browser tab on the same review starts on the first
+file.
 
 ### Handoff button
 `src/components/HandOffButton.tsx` (in the panel toolbar) is md-redline's

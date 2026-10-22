@@ -408,3 +408,51 @@ describe('FileExplorer: stale reveal does not hijack later activity (regression)
     expect(scrollIntoView.mock.instances.at(-1)).toBe(cButton);
   });
 });
+
+describe('FileExplorer: loading indicator', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('says it is loading only once a listing has been slow to arrive', async () => {
+    // A listing that answers quickly would otherwise flash "Loading..." for a
+    // frame or two before the files replace it.
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+    render(
+      <FileExplorer
+        initialDir="/docs"
+        activeFilePath={null}
+        onOpenFile={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await flushMicrotasks();
+    expect(screen.queryByText('Loading...')).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(screen.getByText('Loading...')).toBeTruthy();
+  });
+
+  it('never says it is loading when the listing arrives in time', async () => {
+    render(
+      <FileExplorer
+        initialDir="/docs"
+        activeFilePath={null}
+        onOpenFile={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await flushMicrotasks();
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText('a.md')).toBeTruthy();
+    expect(screen.queryByText('Loading...')).toBeNull();
+  });
+});
