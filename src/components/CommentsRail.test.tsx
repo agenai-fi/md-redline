@@ -396,5 +396,35 @@ describe('CommentsRail', () => {
       expect(document.querySelector('[data-margin-card-id]')).toBeNull();
       expect(document.querySelector('[data-margin-notes]')).toBeNull();
     });
+
+    it('takes the new scroll height inside the resize callback, before React renders again', () => {
+      // A browser runs ResizeObserver callbacks after layout and before paint.
+      // A height that only lands on a later render is painted stale for a
+      // frame, so the panel has to change inside the callback itself.
+      const callbacks: ResizeObserverCallback[] = [];
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          constructor(cb: ResizeObserverCallback) {
+            callbacks.push(cb);
+          }
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      const scroller = document.createElement('div');
+      let height = 900;
+      Object.defineProperty(scroller, 'clientHeight', { get: () => height });
+      renderRail({ density: 'list', scrollRef: { current: scroller } });
+      const panel = document.querySelector('[data-comments-rail]')!
+        .firstElementChild as HTMLElement;
+      expect(panel.style.height).toBe('900px');
+
+      height = 847;
+      // Outside act(): nothing flushes a pending render before the assertion.
+      for (const cb of callbacks) cb([], {} as ResizeObserver);
+      expect(panel.style.height).toBe('847px');
+    });
   });
 });

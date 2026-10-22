@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MdComment } from '../types';
 import type { MarginLayout } from '../hooks/useMarginLayout';
 import type { RailDensity } from '../hooks/usePaneLayout';
@@ -71,13 +71,22 @@ export function CommentsRail(props: CommentsRailProps) {
   // comment restores them (there is a card to interact with again).
   const anchoredEmpty = density === 'anchored' && props.anchoredComments.length === 0;
 
-  // List density pins to the viewport: measure the scroll container height.
-  const [viewportHeight, setViewportHeight] = useState(0);
-  useEffect(() => {
+  // List density pins to the viewport, so the panel takes the scroll
+  // container's height. It is written to the DOM from the ResizeObserver
+  // callback rather than through state: the observer runs after layout and
+  // before paint, so the new height lands in the same frame as the resize. A
+  // state update renders a frame later, and the frame between paints the panel
+  // at the old height -- on reload, the review banner arriving shortens the
+  // container and the centred empty state visibly moves up by half of it.
+  const listPanelRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
     if (density !== 'list') return;
     const el = scrollRef.current;
-    if (!el) return;
-    const measure = () => setViewportHeight(el.clientHeight);
+    const panel = listPanelRef.current;
+    if (!el || !panel) return;
+    const measure = () => {
+      panel.style.height = `${el.clientHeight}px`;
+    };
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     measure();
@@ -91,10 +100,7 @@ export function CommentsRail(props: CommentsRailProps) {
       style={{ right: PAD_R, width: RAIL }}
     >
       {density === 'list' ? (
-        <div
-          className="sticky top-0 flex flex-col py-2"
-          style={{ height: viewportHeight || undefined }}
-        >
+        <div ref={listPanelRef} className="sticky top-0 flex flex-col py-2">
           <div className="flex-1 min-h-0 bg-surface-raised border border-border rounded-lg overflow-hidden">
             <CommentListSurface
               comments={props.allComments}

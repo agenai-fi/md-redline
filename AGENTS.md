@@ -1715,6 +1715,39 @@ truncating each segment past 28 characters. Each segment is a button that
 jumps to that heading. Hidden in raw view and while the diff overlay is
 showing, and disappears again once scrolled back above the first heading.
 
+### Reading position
+The reader's place is kept as a block, not a pixel offset
+(`src/lib/viewport-anchor.ts`): the topmost top-level block still in view,
+identified by content (tag, text length, text prefix) and, for identical
+blocks, by which copy it is, plus its offset from the viewport top. The
+viewer rebuilds its subtree with innerHTML on every render, so no node is
+kept for native scroll anchoring to hold onto; the anchor is found again by
+content instead. A reader at scrollTop 0 is not anchored and stays at the top.
+
+Two things use it. `MarkdownViewer` captures the anchor before each rebuild
+and scrolls it back afterwards, so an edit above the reader (an agent's
+change, a comment being written) leaves them on the same text.
+`useScrollMemory` saves one position per open document in sessionStorage under
+`md-redline-scroll-positions`, so switching tabs or refreshing returns each
+document to the same text; a document not yet visited opens at the top. It
+reads the outgoing position in a layout-effect cleanup, before the viewer's
+own layout effect swaps the next document in, and also on `pagehide`. When the
+saved block is gone it falls back to the saved pixel offset. A tab activated
+during its first load is restored when its body renders, and the restore runs
+once: one that cannot land (the block is gone and the document is now shorter
+than the offset) leaves the reader at the bottom and is not retried.
+
+Every restore uses `scrollTo({ behavior: 'instant' })`, overriding the
+`scroll-behavior: smooth` `.overflow-y-auto` gets from index.css: a restore
+isn't navigation the reader asked for, and animating it reads as the document
+scrolling itself.
+
+Reloading a `?review=` URL reopens the session's files instead of the saved tab
+session, so the active document is kept too (`src/lib/active-tab.ts`):
+sessionStorage, keyed by review id, and reopened on reload while the session
+still includes it. A new browser tab on the same review starts on the first
+file.
+
 ### Handoff button
 `src/components/HandOffButton.tsx` (in the panel toolbar) is md-redline's
 "submit review": it copies the agent prompt for the review comments so they

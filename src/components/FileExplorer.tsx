@@ -12,6 +12,8 @@ interface BrowseResult {
 
 type BrowseResponse = BrowseResult & ApiErrorPayload;
 
+const LOADING_INDICATOR_DELAY_MS = 300;
+
 export interface ExplorerContextMenuInfo {
   type: 'file' | 'directory' | 'blank';
   path: string;
@@ -87,6 +89,18 @@ export function FileExplorer({
   const [errorKind, setErrorKind] = useState<'access-denied' | 'generic' | null>(null);
   const [accessDeniedDir, setAccessDeniedDir] = useState<string | null>(null);
   const [flashPath, setFlashPath] = useState<string | null>(null);
+  // A local listing usually answers in a few milliseconds, and "Loading..."
+  // shown for that long reads as a flicker. It appears only once the first
+  // listing has taken longer than LOADING_INDICATOR_DELAY_MS.
+  const [loadingIsSlow, setLoadingIsSlow] = useState(false);
+  useEffect(() => {
+    if (!loading) {
+      setLoadingIsSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setLoadingIsSlow(true), LOADING_INDICATOR_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   const abortRef = useRef<AbortController | null>(null);
   const activeFileRef = useRef<HTMLButtonElement | null>(null);
@@ -262,7 +276,7 @@ export function FileExplorer({
       )}
 
       {/* Loading */}
-      {loading && !data && (
+      {loading && loadingIsSlow && !data && (
         <div className="flex-1 flex items-center justify-center text-xs text-content-muted">
           Loading...
         </div>

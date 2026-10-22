@@ -27,6 +27,7 @@ import {
 } from '../lib/mermaid-highlights';
 import { SELECTION_MARK_CLASS, SELECTION_MARK_SELECTOR } from '../lib/selection-mark';
 import { isSecondaryClick } from '../lib/platform';
+import { captureViewportAnchor, viewportAnchorScrollTop } from '../lib/viewport-anchor';
 
 export interface ViewerContextMenuInfo {
   /** 'selection' when user right-clicks on selected text; 'highlight' when on a comment mark */
@@ -285,6 +286,15 @@ export const MarkdownViewer = memo(
         container.querySelectorAll<HTMLElement>('.table-scroll__viewport'),
         (vp) => ({ key: tableScrollKey(vp), scrollLeft: vp.scrollLeft }),
       );
+
+      // Capture the reader's place in the document BEFORE the innerHTML
+      // rebuild below tears the whole subtree down. Native scroll anchoring
+      // needs a node that exists on both sides of a DOM mutation to hold the
+      // viewport steady, and a full innerHTML replacement leaves none, so the
+      // reader would be displaced by however much content changed above them.
+      // See lib/viewport-anchor.ts for how the anchor is identified.
+      const scroller = container.closest<HTMLElement>('.overflow-y-auto');
+      const priorAnchor = scroller ? captureViewportAnchor(scroller, container) : undefined;
 
       // Set innerHTML from scratch — guarantees a clean starting state
       // Defense-in-depth: rehype-sanitize is the primary sanitizer, but
@@ -651,6 +661,25 @@ export const MarkdownViewer = memo(
           viewport.removeEventListener('scroll', update);
           ro.disconnect();
         });
+      }
+
+      // --- Restore the reader's place in the document ---
+      // Re-find the anchor captured above among the rebuilt blocks and scroll
+      // it back to where it was, so an edit above the reader shifts the
+      // document under them instead of shifting them under the document. Runs
+      // last, after headings/mermaid/highlights/tables have all finished their
+      // DOM work, so it measures final layout; still inside this
+      // useLayoutEffect (pre-paint). `behavior: 'instant'` overrides the
+      // `scroll-behavior: smooth` the scroller has (index.css,
+      // `.overflow-y-auto`): assigning scrollTop would animate the correction,
+      // so the reader would watch the document slide back into place. No
+      // match (the anchored block was deleted or rewritten) leaves the reader
+      // where they are.
+      if (scroller && priorAnchor) {
+        const top = viewportAnchorScrollTop(scroller, container, priorAnchor);
+        if (top !== undefined && top !== scroller.scrollTop) {
+          scroller.scrollTo({ top, behavior: 'instant' });
+        }
       }
 
       return () => {

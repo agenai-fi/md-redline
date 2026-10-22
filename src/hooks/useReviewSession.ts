@@ -58,6 +58,9 @@ function sessionsEqual(a: ReviewSession[], b: ReviewSession[]): boolean {
  */
 export function useReviewSession(openFilePaths: readonly string[]) {
   const [sessions, setSessions] = useState<ReviewSession[]>([]);
+  // The first poll has answered, successfully or not. Until then an empty
+  // `sessions` means "not asked yet", not "no review is open".
+  const [fetched, setFetched] = useState(false);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -71,6 +74,8 @@ export function useReviewSession(openFilePaths: readonly string[]) {
       setSessions((prev) => (sessionsEqual(prev, open) ? prev : open));
     } catch {
       /* ignore — next poll will retry */
+    } finally {
+      setFetched(true);
     }
   }, []);
 
@@ -154,7 +159,7 @@ export function useReviewSession(openFilePaths: readonly string[]) {
 
   const refresh = useCallback(() => void fetchSessions(), [fetchSessions]);
 
-  return { sessions, shownSessions, refresh };
+  return { sessions, shownSessions, refresh, fetched };
 }
 
 /**

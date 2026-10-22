@@ -1006,3 +1006,337 @@ describe('MarkdownViewer comment highlights — overlapping resolved and open an
     expect(onHighlightClick).toHaveBeenCalledWith('settled-1');
   });
 });
+
+describe('MarkdownViewer viewport scroll anchor', () => {
+  // jsdom does no layout — every element's getBoundingClientRect() is a zero
+  // rect — so these DOM-level tests fake a simple vertical stack: each direct
+  // child of the `.prose` container occupies a fixed-height slot in document
+  // order, and its viewport-relative rect is computed from that slot minus
+  // the scroller's live scrollTop, exactly as a real browser would report it
+  // as scrollTop changes. Installed as an Element.prototype override (rather
+  // than patched onto individual nodes) because the rebuild the effect does
+  // replaces every node — a per-instance patch on the "before" elements
+  // wouldn't reach the "after" ones the restore step measures.
+  const ELEMENT_HEIGHT = 50;
+  const VIEWPORT_HEIGHT = 500;
+
+  function fakeRect(top: number, bottom: number): DOMRect {
+    return {
+      top,
+      bottom,
+      left: 0,
+      right: 100,
+      width: 100,
+      height: bottom - top,
+      x: 0,
+      y: top,
+      toJSON() {
+        return this;
+      },
+    } as DOMRect;
+  }
+
+  function installFakeLayout(prose: HTMLElement, scroller: HTMLElement): () => void {
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      if (this === scroller) return fakeRect(0, VIEWPORT_HEIGHT);
+      if (this.parentElement === prose) {
+        const idx = Array.from(prose.children).indexOf(this);
+        const top = idx * ELEMENT_HEIGHT - scroller.scrollTop;
+        return fakeRect(top, top + ELEMENT_HEIGHT);
+      }
+      return original.call(this);
+    };
+    return () => {
+      Element.prototype.getBoundingClientRect = original;
+    };
+  }
+
+  // Eight top-level blocks: a title, five filler paragraphs, the reader's
+  // anchor heading, and one paragraph after it — each with unique text so
+  // viewportAnchorKey can't collide two of them by accident.
+  const baseMarkdown = [
+    '# Doc Title',
+    '',
+    'Paragraph one with unique text alpha.',
+    '',
+    'Paragraph two with unique text bravo.',
+    '',
+    'Paragraph three with unique text charlie.',
+    '',
+    'Paragraph four with unique text delta.',
+    '',
+    'Paragraph five with unique text echo.',
+    '',
+    '## Target Heading',
+    '',
+    'Paragraph after target with unique text foxtrot.',
+  ].join('\n');
+
+  // Three new paragraphs prepended above everything: an edit above the reader.
+  const insertedAbove = [
+    'Inserted paragraph one unique text zulu.',
+    '',
+    'Inserted paragraph two unique text yankee.',
+    '',
+    'Inserted paragraph three unique text xray.',
+  ].join('\n');
+
+  function renderViewer(markdown: string, enableResolve?: boolean) {
+    const html = renderMarkdown(markdown);
+    return render(
+      <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+        <MarkdownViewer
+          html={html}
+          cleanMarkdown={markdown}
+          comments={[]}
+          activeCommentId={null}
+          selectionText={null}
+          selectionOffset={null}
+          enableResolve={enableResolve}
+          onHighlightClick={vi.fn()}
+        />
+      </div>,
+    );
+  }
+
+  function findByText(root: HTMLElement, text: string): HTMLElement {
+    const el = Array.from(root.children).find((c) => c.textContent?.includes(text));
+    expect(el).toBeDefined();
+    return el as HTMLElement;
+  }
+
+  it('preserves the reader viewport position when content is inserted above it', () => {
+    const { container, rerender } = renderViewer(baseMarkdown);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const prose = container.querySelector('.prose') as HTMLElement;
+    expect(scroller).not.toBeNull();
+    expect(prose).not.toBeNull();
+    // jsdom implements no Element.scrollTo.
+    scroller.scrollTo = ((options: ScrollToOptions) => {
+      scroller.scrollTop = options.top ?? scroller.scrollTop;
+    }) as typeof scroller.scrollTo;
+
+    const restoreLayout = installFakeLayout(prose, scroller);
+    try {
+      scroller.scrollTop = 300;
+
+      const targetBefore = findByText(prose, 'Target Heading');
+      const scrollerRect = scroller.getBoundingClientRect();
+      const offsetBefore = targetBefore.getBoundingClientRect().top - scrollerRect.top;
+
+      const updatedMarkdown = `${insertedAbove}\n\n${baseMarkdown}`;
+      const updatedHtml = renderMarkdown(updatedMarkdown);
+
+      rerender(
+        <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+          <MarkdownViewer
+            html={updatedHtml}
+            cleanMarkdown={updatedMarkdown}
+            comments={[]}
+            activeCommentId={null}
+            selectionText={null}
+            selectionOffset={null}
+            onHighlightClick={vi.fn()}
+          />
+        </div>,
+      );
+
+      const targetAfter = findByText(prose, 'Target Heading');
+      // The innerHTML rebuild replaces every node, so native scroll anchoring
+      // has no node to hold the reader's place with.
+      expect(targetAfter).not.toBe(targetBefore);
+
+      const offsetAfter =
+        targetAfter.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+
+      // Without the fix, offsetAfter would be ~150px lower (3 inserted
+      // paragraphs x 50px) because scrollTop never moved to compensate.
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThanOrEqual(2);
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  it('leaves scroll position untouched when a re-render changes nothing', () => {
+    const { container, rerender } = renderViewer(baseMarkdown);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const prose = container.querySelector('.prose') as HTMLElement;
+
+    const restoreLayout = installFakeLayout(prose, scroller);
+    try {
+      scroller.scrollTop = 300;
+
+      // Force the highlight effect to re-run (enableResolve is a dep)
+      // without changing the rendered markdown at all.
+      rerender(
+        <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+          <MarkdownViewer
+            html={renderMarkdown(baseMarkdown)}
+            cleanMarkdown={baseMarkdown}
+            comments={[]}
+            activeCommentId={null}
+            selectionText={null}
+            selectionOffset={null}
+            enableResolve
+            onHighlightClick={vi.fn()}
+          />
+        </div>,
+      );
+
+      expect(scroller.scrollTop).toBeCloseTo(300, 0);
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  it('corrects the position without animating', () => {
+    const { container, rerender } = renderViewer(baseMarkdown);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const prose = container.querySelector('.prose') as HTMLElement;
+
+    // The scroller has `scroll-behavior: smooth` (index.css), which jsdom
+    // ignores. Model it: a scroll that does not opt out starts an animation,
+    // so nothing has moved on the tick that asked for it. A correction by
+    // plain scrollTop assignment or a smooth scrollTo fails here the way it
+    // animates in the browser.
+    let top = 0;
+    const behaviors: (ScrollBehavior | undefined)[] = [];
+    const readerScrollsTo = (v: number) => {
+      top = v;
+    };
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => top,
+      set: () => {},
+    });
+    scroller.scrollTo = ((options: ScrollToOptions) => {
+      behaviors.push(options.behavior);
+      if (options.behavior === 'instant') top = options.top ?? top;
+    }) as typeof scroller.scrollTo;
+
+    const restoreLayout = installFakeLayout(prose, scroller);
+    try {
+      readerScrollsTo(300);
+      const offsetBefore =
+        findByText(prose, 'Target Heading').getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top;
+
+      const updatedMarkdown = `${insertedAbove}\n\n${baseMarkdown}`;
+      rerender(
+        <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+          <MarkdownViewer
+            html={renderMarkdown(updatedMarkdown)}
+            cleanMarkdown={updatedMarkdown}
+            comments={[]}
+            activeCommentId={null}
+            selectionText={null}
+            selectionOffset={null}
+            onHighlightClick={vi.fn()}
+          />
+        </div>,
+      );
+
+      const offsetAfter =
+        findByText(prose, 'Target Heading').getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top;
+      expect(Math.abs(offsetAfter - offsetBefore)).toBeLessThanOrEqual(2);
+      expect(behaviors).toEqual(['instant']);
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  // Stands in for Element.scrollTo, which jsdom does not implement.
+  function stubScrollTo(scroller: HTMLElement) {
+    scroller.scrollTo = ((options: ScrollToOptions) => {
+      scroller.scrollTop = options.top ?? scroller.scrollTop;
+    }) as typeof scroller.scrollTo;
+  }
+
+  it('keeps the reader on the same copy of a repeated block', () => {
+    // Nine blocks; the two horizontal rules share a key. With 50px blocks and
+    // scrollTop 300 the second rule (index 6) is at the top of the viewport.
+    const markdown = [
+      '# Doc Title',
+      '',
+      'Paragraph one unique alpha.',
+      '',
+      '---',
+      '',
+      'Paragraph two unique bravo.',
+      '',
+      'Paragraph three unique charlie.',
+      '',
+      'Paragraph four unique delta.',
+      '',
+      '---',
+      '',
+      'Paragraph five unique echo.',
+      '',
+      'Paragraph six unique foxtrot.',
+    ].join('\n');
+    const { container, rerender } = renderViewer(markdown);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const prose = container.querySelector('.prose') as HTMLElement;
+    stubScrollTo(scroller);
+
+    const restoreLayout = installFakeLayout(prose, scroller);
+    try {
+      scroller.scrollTop = 300;
+      expect(prose.children[6].tagName).toBe('HR');
+
+      // No edit: only a flag the render effect depends on changes.
+      rerender(
+        <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+          <MarkdownViewer
+            html={renderMarkdown(markdown)}
+            cleanMarkdown={markdown}
+            comments={[]}
+            activeCommentId={null}
+            selectionText={null}
+            selectionOffset={null}
+            enableResolve
+            onHighlightClick={vi.fn()}
+          />
+        </div>,
+      );
+
+      expect(scroller.scrollTop).toBe(300);
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  it('leaves a reader at the very top there when content is inserted above', () => {
+    const { container, rerender } = renderViewer(baseMarkdown);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const prose = container.querySelector('.prose') as HTMLElement;
+    stubScrollTo(scroller);
+
+    const restoreLayout = installFakeLayout(prose, scroller);
+    try {
+      expect(scroller.scrollTop).toBe(0);
+
+      const updatedMarkdown = `${insertedAbove}\n\n${baseMarkdown}`;
+      rerender(
+        <div className="overflow-y-auto" style={{ height: `${VIEWPORT_HEIGHT}px` }}>
+          <MarkdownViewer
+            html={renderMarkdown(updatedMarkdown)}
+            cleanMarkdown={updatedMarkdown}
+            comments={[]}
+            activeCommentId={null}
+            selectionText={null}
+            selectionOffset={null}
+            onHighlightClick={vi.fn()}
+          />
+        </div>,
+      );
+
+      expect(scroller.scrollTop).toBe(0);
+      expect(findByText(prose, 'Inserted paragraph one').getBoundingClientRect().top).toBe(0);
+    } finally {
+      restoreLayout();
+    }
+  });
+});
