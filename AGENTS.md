@@ -1353,9 +1353,10 @@ The kebab is hidden entirely when the file has no comments. These duplicate
 density and the drawer, so the kebab is the one route that works in Anchored
 density too.
 
-Tab badges count ALL open comments including
-agent-initiated ones (`tabCommentCounts` in App); the handoff button keeps
-the sendable-only map. Inline code in prose renders neutral (`--theme-text`
+Tab badges count open comments, user and agent-initiated alike
+(`tabCommentCounts` in App), never resolved ones whatever the resolve flag,
+so a fully resolved file shows no badge; the handoff button keeps the
+sendable-only map. Inline code in prose renders neutral (`--theme-text`
 on `--theme-bg-inset`), never the crimson accent:
 
 - **Anchored** (default): cards align to their document anchors. Cards are
